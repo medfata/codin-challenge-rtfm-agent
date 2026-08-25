@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RTFM Event Bus</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0b0d10;
+    --panel: #11141a;
+    --panel-edge: #1d222c;
+    --text: #d7dbe2;
+    --muted: #6b7380;
+    --amber: #f2a33c;
+    --amber-dim: rgba(242, 163, 60, .14);
+    --started: #58a6ff;
+    --completed: #3fb970;
+    --failed: #f2555a;
+    --memory: #bc8cff;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+    --disp: "Bricolage Grotesque", sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(1100px 500px at 85% -10%, rgba(242,163,60,.07), transparent 60%),
+      repeating-linear-gradient(0deg, transparent 0 31px, rgba(255,255,255,.022) 31px 32px),
+      var(--ink);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  header {
+    padding: 26px 32px 20px;
+    border-bottom: 1px solid var(--panel-edge);
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+  }
+  header h1 {
+    font-family: var(--disp);
+    font-weight: 800;
+    font-size: clamp(26px, 4vw, 40px);
+    letter-spacing: -.02em;
+    color: #f4f6f9;
+  }
+  header h1 em { font-style: normal; color: var(--amber); }
+  header .sub { color: var(--muted); letter-spacing: .04em; text-transform: uppercase; font-size: 11px; }
+  .conn {
+    margin-left: auto;
+    display: inline-flex; align-items: center; gap: 9px;
+    border: 1px solid var(--panel-edge);
+    background: var(--panel);
+    padding: 7px 14px; border-radius: 999px;
+    font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: background .2s; }
+  .conn[data-state="connecting"] .dot { background: var(--amber); animation: blink .7s steps(2) infinite; }
+  .conn[data-state="live"] .dot { background: var(--completed); box-shadow: 0 0 10px rgba(63,185,112,.7); animation: pulse 2s ease-in-out infinite; }
+  .conn[data-state="error"] .dot { background: var(--failed); }
+  @keyframes blink { 50% { opacity: .15; } }
+  @keyframes pulse { 50% { transform: scale(1.35); } }
+
+  .wrap { display: grid; grid-template-columns: 340px 1fr; min-height: calc(100vh - 92px); }
+  aside {
+    border-right: 1px solid var(--panel-edge);
+    padding: 24px;
+    display: flex; flex-direction: column; gap: 22px;
+    background: linear-gradient(180deg, rgba(242,163,60,.03), transparent 30%);
+  }
+  .field label {
+    display: block; margin-bottom: 6px;
+    font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted);
+  }
+  .field input {
+    width: 100%;
+    background: var(--ink);
+    border: 1px solid var(--panel-edge);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 9px 11px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .field input:focus { border-color: var(--amber); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .btn {
+    width: 100%;
+    border: none; border-radius: 6px;
+    font-family: var(--disp); font-weight: 700; font-size: 14px;
+    letter-spacing: .02em;
+    padding: 11px 0; cursor: pointer;
+    transition: transform .08s, filter .15s;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--amber); color: #171207; }
+  .btn-primary:hover { filter: brightness(1.1); }
+  .btn-ghost {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--panel-edge);
+    font-family: var(--mono); font-weight: 500; font-size: 12px;
+  }
+  .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+  .btn[disabled] { opacity: .35; cursor: not-allowed; }
+
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .stat {
+    border: 1px solid var(--panel-edge); border-radius: 6px;
+    background: var(--panel);
+    padding: 9px 6px; text-align: center;
+  }
+  .stat b { display: block; font-family: var(--disp); font-size: 19px; font-weight: 800; color: #f4f6f9; }
+  .stat span { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .stat[data-k="all"] b { color: var(--amber); }
+
+  .note {
+    border-left: 2px solid var(--panel-edge);
+    padding-left: 12px;
+    color: var(--muted); font-size: 11.5px;
+  }
+  .note code { color: var(--amber); font-size: 11px; }
+  .hint { color: var(--failed); font-size: 11.5px; min-height: 16px; }
+
+  main { padding: 18px 28px 40px; overflow-y: auto; max-height: calc(100vh - 92px); }
+  .feed-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 6px 2px 12px;
+    color: var(--muted); font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+  }
+  #feed { list-style: none; }
+  .ev {
+    --accent: var(--muted);
+    border: 1px solid var(--panel-edge);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    background: var(--panel);
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    animation: slidein .22s ease-out both;
+  }
+  @keyframes slidein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; } }
+  .ev[data-type="ingest.started"]   { --accent: var(--started); }
+  .ev[data-type="ingest.completed"] { --accent: var(--completed); }
+  .ev[data-type="ingest.failed"]    { --accent: var(--failed); }
+  .ev[data-type="memory.turn_stored"] { --accent: var(--memory); }
+  .ev-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .badge {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    padding: 2px 9px; border-radius: 999px;
+  }
+  .ev-id { color: var(--muted); font-size: 11px; }
+  .ev-time { margin-left: auto; color: var(--muted); font-size: 11px; }
+  .ev summary {
+    cursor: pointer; margin-top: 6px;
+    color: var(--muted); font-size: 11px; user-select: none; list-style: none;
+  }
+  .ev summary::before { content: "+ "; color: var(--accent); }
+  .ev details[open] summary::before { content: "- "; }
+  .ev pre {
+    margin-top: 6px; padding: 10px 12px;
+    background: var(--ink); border: 1px solid var(--panel-edge); border-radius: 5px;
+    overflow-x: auto; font-size: 12px; color: var(--text);
+  }
+  .empty {
+    border: 1px dashed var(--panel-edge); border-radius: 8px;
+    padding: 48px 20px; text-align: center; color: var(--muted);
+  }
+  .empty b { display: block; font-family: var(--disp); font-size: 17px; color: var(--text); margin-bottom: 6px; }
+  .hb-flash {
+    position: fixed; bottom: 14px; right: 18px;
+    font-size: 10px; letter-spacing: .18em; color: var(--muted);
+    opacity: 0; transition: opacity .3s;
+  }
+  .hb-flash.on { opacity: 1; }
+  @media (max-width: 900px) {
+    .wrap { grid-template-columns: 1fr; }
+    aside { border-right: none; border-bottom: 1px solid var(--panel-edge); }
+    main { max-height: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RTFM <em>EVENT BUS</em></h1>
+  <span class="sub">redis streams &rarr; sse &middot; live tenant feed</span>
+  <span class="conn" id="conn"><span class="dot"></span><span id="connLabel">Offline</span></span>
+</header>
+
+<div class="wrap">
+  <aside>
+    <div class="field">
+      <label for="base">API base URL (blank = this origin)</label>
+      <input id="base" value="" placeholder="http://localhost:8000" spellcheck="false">
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label for="tenant">Tenant slug</label>
+        <input id="tenant" value="acme" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="backlog">Backlog</label>
+        <input id="backlog" value="25" spellcheck="false">
+      </div>
+    </div>
+    <button class="btn btn-primary" id="connectBtn">Connect</button>
+    <button class="btn btn-ghost" id="clearBtn" disabled>Clear feed</button>
+
+    <div class="stats">
+      <div class="stat" data-k="all"><b id="cAll">0</b><span>All</span></div>
+      <div class="stat" data-k="start"><b id="cStarted">0</b><span>Strt</span></div>
+      <div class="stat" data-k="done"><b id="cCompleted">0</b><span>Done</span></div>
+      <div class="stat" data-k="fail"><b id="cFailed">0</b><span>Fail</span></div>
+      <div class="stat" data-k="mem"><b id="cMemory">0</b><span>Mem</span></div>
+    </div>
+
+    <p class="hint" id="hint"></p>
+    <p class="note">
+      Native <code>EventSource</code> cannot send headers, so the feed accepts
+      <code>?tenant=</code> (same validation as <code>X-Tenant-Id</code>).
+      Reconnects resume via <code>Last-Event-ID</code>; duplicate ids
+      (at-least-once delivery) are filtered here.
+    </p>
+  </aside>
+
+  <main>
+    <div class="feed-head">
+      <span>Live stream &middot; t:{org}:events</span>
+      <span id="countLabel">0 events</span>
+    </div>
+    <ul id="feed">
+      <li class="empty"><b>No events yet.</b>Connect to start listening to this tenant's stream.</li>
+    </ul>
+  </main>
+</div>
+
+<span class="hb-flash" id="hb">&middot; ping &middot;</span>
+
+<script>
+(function () {
+  var es = null;
+  var counts = { all: 0 };
+  var seenIds = {};
+  var hbTimer = null;
+  var $ = function (id) { return document.getElementById(id); };
+
+  var TYPES = ["ingest.started", "ingest.completed", "ingest.failed", "memory.turn_stored"];
+  var SHORT = { "ingest.started": "cStarted", "ingest.completed": "cCompleted",
+                "ingest.failed": "cFailed", "memory.turn_stored": "cMemory" };
+
+  function setState(state, label) {
+    $("conn").dataset.state = state;
+    $("connLabel").textContent = label;
+    $("connectBtn").textContent = (state === "live") ? "Disconnect" : "Connect";
+    $("clearBtn").disabled = (state !== "live" && counts.all === 0);
+  }
+
+  function bump(type) {
+    counts.all += 1;
+    $("cAll").textContent = counts.all;
+    if (SHORT[type]) {
+      var el = $(SHORT[type]);
+      el.textContent = parseInt(el.textContent, 10) + 1;
+    }
+  }
+
+  function addRow(type, entryId, data, ts) {
+    var empty = document.querySelector(".empty");
+    if (empty) empty.remove();
+    var li = document.createElement("li");
+    li.className = "ev";
+    li.dataset.type = type;
+    var when = ts || new Date().toISOString().replace("T", " ").slice(0, 19);
+    li.innerHTML =
+      '<div class="ev-top">' +
+        '<span class="badge"></span>' +
+        '<span class="ev-id"></span>' +
+        '<span class="ev-time"></span>' +
+      '</div>' +
+      '<details><summary>payload</summary><pre></pre></details>';
+    li.querySelector(".badge").textContent = type;
+    li.querySelector(".ev-id").textContent = "#" + entryId;
+    li.querySelector(".ev-time").textContent = when;
+    li.querySelector("pre").textContent = JSON.stringify(data, null, 2);
+    $("feed").prepend(li);
+    $("countLabel").textContent = counts.all + " events";
+  }
+
+  function reset() {
+    counts = { all: 0 };
+    seenIds = {};
+    $("cAll").textContent = "0";
+    TYPES.forEach(function (t) {
+      if (SHORT[t]) $(SHORT[t]).textContent = "0";
+    });
+    $("feed").innerHTML =
+      '<li class="empty"><b>No events yet.</b>Connect to start listening to this tenant\'s stream.</li>';
+    $("countLabel").textContent = "0 events";
+  }
+
+  function close() {
+    if (es) { es.close(); es = null; }
+  }
+
+  function listen(type) {
+    es.addEventListener(type, function (e) {
+      var eid = e.lastEventId || "?";
+      if (eid !== "?" && seenIds[eid]) return;  // at-least-once duplicates
+      seenIds[eid] = true;
+      var data;
+      try { data = JSON.parse(e.data); } catch (_) { data = { raw: e.data }; }
+      bump(type);
+      addRow(type, eid, data);
+      markActivity();
+    });
+  }
+
+  function connect() {
+    var base = $("base").value.trim().replace(/\/+$/, "");
+    var tenant = $("tenant").value.trim();
+    var backlog = parseInt($("backlog").value, 10) || 0;
+    $("hint").textContent = "";
+
+    if (!tenant) { $("hint").textContent = "Enter a tenant slug first."; return; }
+    if (base && !/^https?:\/\//.test(base)) { $("hint").textContent = "API base must start with http(s) (or stay blank)."; return; }
+
+    if (es) { close(); setState("offline", "Offline"); return; }
+
+    reset();
+    setState("connecting", "Connecting");
+    // Empty base means same-origin - the served /demo/events page needs no CORS.
+    var origin = base || window.location.origin;
+    es = new EventSource(origin + "/events/stream?tenant=" +
+          encodeURIComponent(tenant) + "&backlog=" + backlog);
+
+    TYPES.forEach(listen);
+
+    es.onopen = function () { setState("live", "Live"); };
+    es.onerror = function () {
+      if (es && es.readyState === EventSource.CLOSED) {
+        setState("error", "Error - check API/CORS");
+        $("hint").textContent = "Connection failed or closed. Is the API up?";
+      } else {
+        setState("connecting", "Reconnecting");
+      }
+    };
+  }
+
+  function markActivity() {
+    $("hb").textContent = "last event " + new Date().toLocaleTimeString();
+    $("hb").classList.add("on");
+    if (hbTimer) clearTimeout(hbTimer);
+    hbTimer = setTimeout(function () { $("hb").classList.remove("on"); }, 2500);
+  }
+
+  $("connectBtn").addEventListener("click", connect);
+  $("clearBtn").addEventListener("click", reset);
+  window.addEventListener("beforeunload", close);
+})();
+</script>
+</body>
+</html>

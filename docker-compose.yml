@@ -1,0 +1,63 @@
+services:
+  redis:
+    # Single Redis 8 (search/JSON modules included natively since 8.0).
+    # Volume key kept as `redis-memory-data` so Agent Memory Server data survives.
+    image: redis:8
+    container_name: rtfm-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-memory-data:/data
+    restart: unless-stopped
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: rtfm-redisinsight
+    ports:
+      - "8001:5540"
+    volumes:
+      - redisinsight-data:/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  agent-memory:
+    image: redislabs/agent-memory-server:latest
+    container_name: rtfm-agent-memory
+    ports:
+      - "8002:8000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      DISABLE_AUTH: "true"
+      GENERATION_MODEL: gemini/gemini-2.5-flash
+      FAST_MODEL: gemini/gemini-2.5-flash
+      EMBEDDING_MODEL: gemini/gemini-embedding-001
+      REDISVL_VECTOR_DIMENSIONS: "3072"
+      GEMINI_API_KEY: ${GOOGLE_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      LOG_LEVEL: INFO
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  agent-memory-worker:
+    image: redislabs/agent-memory-server:latest
+    container_name: rtfm-agent-memory-worker
+    environment:
+      REDIS_URL: redis://redis:6379
+      DISABLE_AUTH: "true"
+      GENERATION_MODEL: gemini/gemini-2.5-flash
+      FAST_MODEL: gemini/gemini-2.5-flash
+      EMBEDDING_MODEL: gemini/gemini-embedding-001
+      REDISVL_VECTOR_DIMENSIONS: "3072"
+      GEMINI_API_KEY: ${GOOGLE_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      LOG_LEVEL: INFO
+    command: ["agent-memory", "task-worker", "--concurrency", "4"]
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  redis-memory-data:
+  redisinsight-data:
