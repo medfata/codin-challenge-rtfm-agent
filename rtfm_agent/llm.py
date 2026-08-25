@@ -65,10 +65,13 @@ def _lanes(lane: str = "generation") -> list[dict]:
             {
                 # Deep free pool, distinct from gpt-oss-20b: cache warming
                 # bursts must not starve the fast lane that routing needs.
+                # qwen3 models emit <think> reasoning by default; the extra
+                # payload switches it off (verified against Groq, Aug 2026).
                 "name": "economy-fallback",
                 "base_url": LLM_BASE_URL,
                 "api_key": LLM_API_KEY,
                 "model": LLM_ECONOMY_FALLBACK_MODEL,
+                "payload_extra": {"reasoning_effort": "none"},
             },
         ]
         return [entry for entry in lanes if entry["api_key"]]
@@ -128,6 +131,7 @@ def _chat_once(lane: dict, messages: list[dict], temperature: float,
         "model": _resolve_model(lane, model),
         "messages": messages,
         "temperature": temperature,
+        **(lane.get("payload_extra") or {}),
     }
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
@@ -182,6 +186,7 @@ def _stream_lane(lane: dict, messages: list[dict], temperature: float,
         "messages": messages,
         "temperature": temperature,
         "stream": True,
+        **(lane.get("payload_extra") or {}),
     }
 
     def _open(payload):

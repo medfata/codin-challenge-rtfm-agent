@@ -106,17 +106,21 @@ EVENTS_HEARTBEAT_S = int(os.getenv("EVENTS_HEARTBEAT_S", "15"))
 # content it stores, so background/stored work rides a cheap economy lane and
 # only user-facing doc answers use the capable generation lane.
 # Economy lane: chitchat replies, memory-route synthesis, semantic-cache
-# warming. Defaults ride the Google key; when the Gemini free tier answers
-# 429/5xx the lane fails over to a deep-quota Groq model (separate pool from
-# the gpt-oss-20b fast lane so warming never starves routing).
+# warming. Defaults ride the Google key (whatever var it lives in); when the
+# Gemini free tier answers 429/5xx the lane fails over to a deep-quota Groq
+# model - a pool separate from the gpt-oss-20b fast lane so warming never
+# starves routing. (llama-3.1-8b-instant was decommissioned on Groq in 2026;
+# qwen/qwen3.6-27b is its successor slot and gets reasoning_effort=none.)
 LLM_ECONOMY_BASE_URL = (
     os.getenv("LLM_ECONOMY_BASE_URL", "")
     or "https://generativelanguage.googleapis.com/v1beta/openai/"
 ).rstrip("/")
-LLM_ECONOMY_API_KEY = os.getenv("LLM_ECONOMY_API_KEY", "") or GOOGLE_API_KEY
-LLM_ECONOMY_MODEL = os.getenv("LLM_ECONOMY_MODEL", "gemini-2.5-flash-lite")
+LLM_ECONOMY_API_KEY = (
+    os.getenv("LLM_ECONOMY_API_KEY", "") or GOOGLE_API_KEY or FALLBACK_LLM_API_KEY
+)
+LLM_ECONOMY_MODEL = os.getenv("LLM_ECONOMY_MODEL", "gemini-3.5-flash-lite")
 LLM_ECONOMY_FALLBACK_MODEL = os.getenv(
-    "LLM_ECONOMY_FALLBACK_MODEL", "llama-3.1-8b-instant"
+    "LLM_ECONOMY_FALLBACK_MODEL", "qwen/qwen3.6-27b"
 )
 # Cache warming: regenerate popular questions' answers with the economy lane
 # straight into the semantic cache (background job, REST + conversational).

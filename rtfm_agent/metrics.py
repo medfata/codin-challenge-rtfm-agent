@@ -69,6 +69,30 @@ def record_route(r: Redis, t: TenantContext, route: str) -> None:
         logging.getLogger(__name__).warning("metrics write failed: %s", exc)
 
 
+def record_lane_call(r: Redis, t: TenantContext, lane: str) -> None:
+    """Count one successful LLM call on a named lane (generation/fast/economy)."""
+    try:
+        r.hincrby(t.metrics_key, f"llm_calls_{lane}_total", 1)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("metrics write failed: %s", exc)
+
+
+def record_cache_warm(r: Redis, t: TenantContext, answers: int) -> None:
+    """Count one cache-warm run and the answers it wrote."""
+    try:
+        pipe = r.pipeline(transaction=False)
+        pipe.hincrby(t.metrics_key, "cache_warm_runs_total", 1)
+        if answers:
+            pipe.hincrby(t.metrics_key, "cache_warm_answers_total", answers)
+        pipe.execute()
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("metrics write failed: %s", exc)
+
+
 def record_stale_answer(r: Redis, t: TenantContext) -> None:
     """Count an answer served with an outdated-documentation warning."""
     try:
@@ -119,4 +143,9 @@ def snapshot(r: Redis, t: TenantContext) -> dict:
         "stale_answers_served": int(num("stale_answers_served")),
         "mcp_calls_total": int(num("mcp_calls_total")),
         "events_published_total": int(num("events_published_total")),
+        "llm_calls_generation_total": int(num("llm_calls_generation_total")),
+        "llm_calls_fast_total": int(num("llm_calls_fast_total")),
+        "llm_calls_economy_total": int(num("llm_calls_economy_total")),
+        "cache_warm_runs_total": int(num("cache_warm_runs_total")),
+        "cache_warm_answers_total": int(num("cache_warm_answers_total")),
     }

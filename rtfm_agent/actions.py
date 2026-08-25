@@ -24,6 +24,7 @@ from rtfm_agent import versions as versions_mod
 from rtfm_agent.config import (
     DOCS_DIR,
     ENABLE_ACTIONS,
+    ENABLE_CACHE_WARM,
     ENABLE_DESTRUCTIVE_ACTIONS,
     ENABLE_DOC_VERSIONING,
     ENABLE_DRIFT_WARNING,
@@ -48,6 +49,7 @@ def dispatch(action: str, r: Redis, t: TenantContext, session_id: str) -> str:
         "clear_session": _clear_session,
         "flush_cache": _flush_cache,
         "reingest": _reingest,
+        "warm_cache": _warm_cache,
     }
     handler = handlers.get(action)
     if handler is None:
@@ -159,6 +161,20 @@ def _reingest(r: Redis, t: TenantContext, session_id: str) -> str:
         "Re-indexing started in the background - chewing through the docs "
         "corpus now. This takes a little while; ask me for my stats "
         "afterwards to see the new totals."
+    )
+
+
+def _warm_cache(r: Redis, t: TenantContext, session_id: str) -> str:
+    """Pre-fill this tenant's semantic cache in the background (non-destructive)."""
+    if not ENABLE_CACHE_WARM:
+        return "Cache warming is disabled (ENABLE_CACHE_WARM=0)."
+    from rtfm_agent.warm import start_background
+
+    start_background(r, t)
+    return (
+        "Cache warming started in the background - I'm pre-answering your "
+        "most-asked questions with the cheap model so future hits are "
+        "instant. Ask me for my stats afterwards to see the new totals."
     )
 
 

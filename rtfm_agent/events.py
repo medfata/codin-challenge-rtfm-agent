@@ -39,6 +39,8 @@ INGEST_STARTED = "ingest.started"
 INGEST_COMPLETED = "ingest.completed"
 INGEST_FAILED = "ingest.failed"
 MEMORY_TURN_STORED = "memory.turn_stored"
+CACHE_WARM_STARTED = "cache.warm_started"
+CACHE_WARM_COMPLETED = "cache.warm_completed"
 
 # Stream ids are "<milliseconds>-<sequence>"; anything else in a client's
 # Last-Event-ID would poison every subsequent XREAD with errors.

@@ -4,7 +4,7 @@
 
 - **Language:** Python 3.13
 - **Redis:** Single Redis 8 (`redis:8`) via Docker Compose (`docker-compose.yml`, port 6379, volume-backed). Search/JSON modules are built into Redis 8 natively. RedisInsight UI on port 8001. (Originally Redis Stack 7.x; consolidated in Aug 2026 because AMS requires the Redis 8.0 `HSETEX` command and no Stack image ships Redis 8.)
-- **LLM:** dual OpenAI-compatible lanes - primary **Groq** (`openai/gpt-oss-120b` generation + separate `openai/gpt-oss-20b` fast lane for routing/summarisation, each with its own free quota pool); automatic **Gemini** (`gemini-2.5-flash`) fallback on HTTP 429/5xx/connection errors (`ENABLE_LLM_FALLBACK`)
+- **LLM:** tri-lane OpenAI-compatible strategy (Step 12) - generation **Groq** (`openai/gpt-oss-120b`) for doc answers, fast lane `openai/gpt-oss-20b` for routing/rewrite/summary, economy lane `gemini-3.5-flash-lite` -> Groq `qwen/qwen3.6-27b` failover for background/stored content (chitchat, memory synthesis, cache warming); automatic **Gemini** fallback on HTTP 429/5xx/connection errors (`ENABLE_LLM_FALLBACK`)
 - **Embeddings:** local fastembed `BAAI/bge-small-en-v1.5` (384 dims - matches `FT.CREATE ... DIM`)
 - **Redis client:** `redis-py` (async, env-driven `REDIS_URL`)
 - **Sample docs:** Pro Git book, 91 AsciiDoc sections in `docs/progit2/`
@@ -86,13 +86,24 @@ Streams were chosen over Pub/Sub for durability + replay in one mechanism; Pub/S
 Config: `ENABLE_EVENTS`, `EVENTS_STREAM_MAXLEN`, `EVENTS_HEARTBEAT_S`, `EVENTS_CORS_ORIGINS`.
 Verification: `scripts/step11_check_events.py` (incl. a 40-subscriber concurrency drill); live feed demo at `scripts/events_demo.html` or `/demo/events`.
 
+## Step 12 - Multi-model strategy
+
+Redis doesn't care which model generated the content it stores, so LLM spend is split by task visibility: background/stored work rides a cheap **economy lane** (`gemini-3.5-flash-lite`, failing over to Groq `qwen/qwen3.6-27b` - a separate free pool, with `reasoning_effort: none`, so warm bursts never starve the gpt-oss-20b routing lane), while only the user-facing doc answer uses `gpt-oss-120b`. Chitchat replies and memory-route synthesis moved to economy; routing/rewrite/summary stay fast. The semantic cache gains **warming**: a per-tenant question-popularity ZSET (`{prefix}qfreq`, top-200, 30-day TTL) feeds a locked background job (`POST /cache/warm` or the conversational `warm_cache` action) that pre-answers popular questions with the economy lane straight into the cache, stamped with the current corpus version; live misses still generate with the capable model. AMS memory extraction switched to flash-lite (embeddings untouched). MCP inherits everything via `_pipeline`.
+
+Config: `LLM_ECONOMY_MODEL`, `LLM_ECONOMY_FALLBACK_MODEL`, `ENABLE_CACHE_WARM`, `CACHE_WARM_TOP_N`, `QFREQ_TTL_S`, `QFREQ_MAX_ENTRIES`.
+Verification: `scripts/step12_check_multi_model.py`.
+
+Tradeoffs: warm answers are standalone (no session/persona context); chitchat/synthesis ride a small model in exchange for provider-outage resilience; AMS has no native fallback so Google-quota exhaustion pauses memory promotion until reset (escape hatch documented in docker-compose).
+
 ## LLM lanes & quotas (verified Aug 2026)
 
 | Lane | Model | Free-tier ceiling |
 |---|---|---|
 | Fast (routing/rewrite/summary) | `openai/gpt-oss-20b` | 30 RPM / 1,000 req/day / 200K tok/day |
-| Generation | `openai/gpt-oss-120b` | 30 RPM / 1,000 req/day / 200K tok/day |
-| Fallback | `gemini-2.5-flash` | Google AI Studio free tier (limits visible per-project in AI Studio) |
+| Generation (final answers) | `openai/gpt-oss-120b` | 30 RPM / 1,000 req/day / 200K tok/day |
+| Economy (stored/background) | `gemini-3.5-flash-lite` | ~15-30 RPM / ~1,000 req/day (flash family shares the daily pool) |
+| Economy fallback | `qwen/qwen3.6-27b` | ~30 RPM / 1,000 req/day (separate Groq pool, `reasoning_effort: none`) |
+| Fallback (generation/fast terminal) | `gemini-2.5-flash` | Google AI Studio free tier (limits visible per-project in AI Studio) |
 
 Quotas are enforced per lane, so the fast lane never competes with generation traffic. Failover triggers on 429, 5xx, and connection errors; hard 4xx responses are surfaced immediately instead of burning the fallback lane.
 
@@ -120,7 +131,7 @@ flowchart LR
         RET --> CTX
         MEM[Agent Memory Server<br/>long-term memories] --> CTX
         MEM -.->|recall| MEMR
-        CTX --> LLM[LLM lanes<br/>Groq gpt-oss-120b<br/>fallback: Gemini flash]
+        CTX --> LLM[LLM lanes<br/>gen: gpt-oss-120b<br/>economy: flash-lite -> qwen-27b<br/>fallback: Gemini flash]
         LLM --> OUT
         OUT --> CACHE
         OUT --> SESS
@@ -154,3 +165,4 @@ flowchart LR
 | Document versioning | content-hash corpus versions, stale-cache + drift warnings | Step 9 |
 | MCP exposure | assistant as MCP tool server at /mcp (5 tools + resource) | Step 10 |
 | Real-time events | per-tenant Redis Streams -> SSE feed with Last-Event-ID replay | Step 11 |
+| Multi-model strategy | tri-lane LLM routing (generation/fast/economy) + economy-lane cache warming | Step 12 |

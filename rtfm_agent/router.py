@@ -27,7 +27,8 @@ from rtfm_agent.prompts import ROUTE_SYSTEM, build_route_prompt
 logger = logging.getLogger(__name__)
 
 ROUTES = ("doc", "chitchat", "action", "memory")
-ACTIONS = ("metrics", "list_docs", "clear_session", "flush_cache", "reingest")
+ACTIONS = ("metrics", "list_docs", "clear_session", "flush_cache", "reingest",
+           "warm_cache")
 
 # Actions with side effects require corroboration in the raw question text -
 # the LLM hint alone never triggers them.

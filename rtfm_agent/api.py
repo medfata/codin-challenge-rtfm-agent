@@ -2,7 +2,8 @@
 memory, hybrid scoped search, conversation summarisation, observability,
 semantic routing (doc/chitchat/action/memory) with conversational actions,
 document versioning with stale-answer warnings, real-time event streaming
-over per-tenant Redis Streams, and an MCP server mount."""
+over per-tenant Redis Streams, an MCP server mount, and a multi-model lane
+strategy with economy-lane semantic-cache warming."""
 
 import contextlib
 import json
@@ -30,8 +31,11 @@ from rtfm_agent import router as router_mod
 from rtfm_agent import scope as scope_mod
 from rtfm_agent import sessions as sessions_mod
 from rtfm_agent import versions as versions_mod
+from rtfm_agent import warm as warm_mod
 from rtfm_agent.config import (
+    CACHE_WARM_TOP_N,
     DOCS_DIR,
+    ENABLE_CACHE_WARM,
     ENABLE_EVENTS,
     ENABLE_MCP,
     ENABLE_QUERY_REWRITE,
@@ -213,6 +217,11 @@ class MetricsResponse(BaseModel):
     stale_answers_served: int = 0
     mcp_calls_total: int = 0
     events_published_total: int = 0
+    llm_calls_generation_total: int = 0
+    llm_calls_fast_total: int = 0
+    llm_calls_economy_total: int = 0
+    cache_warm_runs_total: int = 0
+    cache_warm_answers_total: int = 0
 
 
 def _embed_question(text: str) -> bytes:
@@ -239,7 +248,22 @@ def _citations_from(chunks) -> list[Citation]:
     return sorted(deduped.values(), key=lambda x: x.score)
 
 
-def _rewrite_query(question: str, hist_turns: list[dict]) -> tuple[str, str | None]:
+def _chat_on_lane(t: TenantContext, lane: str, messages: list[dict], **kwargs):
+    """Blocking chat on a named lane + success counter (Step 12 observability)."""
+    out = llm_client.chat(messages, lane=lane, **kwargs)
+    metrics_mod.record_lane_call(_r, t, lane)
+    return out
+
+
+def _stream_on_lane(t: TenantContext, lane: str, messages: list[dict], **kwargs):
+    """Streaming chat on a named lane; counted once the stream completes."""
+    for delta in llm_client.stream_chat(messages, lane=lane, **kwargs):
+        yield delta
+    metrics_mod.record_lane_call(_r, t, lane)
+
+
+def _rewrite_query(question: str, hist_turns: list[dict],
+                   t: TenantContext | None = None) -> tuple[str, str | None]:
     """Follow-up handling: standalone query + optional SOURCE document hint."""
     if not (hist_turns and ENABLE_QUERY_REWRITE):
         return question, None
@@ -253,6 +277,8 @@ def _rewrite_query(question: str, hist_turns: list[dict]) -> tuple[str, str | No
             max_tokens=512,
             model=llm_client.LLM_FAST_MODEL,
         )
+        if t is not None:
+            metrics_mod.record_lane_call(_r, t, "fast")
         raw = raw.strip()
     except LLMError as exc:
         logger.warning("query rewrite failed (non-fatal): %s", exc)
@@ -276,7 +302,8 @@ def _rewrite_query(question: str, hist_turns: list[dict]) -> tuple[str, str | No
     return query, source_hint
 
 
-def _summarize_turns(existing_summary: str | None, older_msgs) -> str | None:
+def _summarize_turns(existing_summary: str | None, older_msgs,
+                     t: TenantContext | None = None) -> str | None:
     """Fold older turns (+ previous summary) into a compact rolling summary."""
     raw, _ = llm_client.chat(
         [
@@ -287,6 +314,8 @@ def _summarize_turns(existing_summary: str | None, older_msgs) -> str | None:
         max_tokens=512,
         model=llm_client.LLM_FAST_MODEL,
     )
+    if t is not None:
+        metrics_mod.record_lane_call(_r, t, "fast")
     return raw.strip() or None
 
 
@@ -353,9 +382,11 @@ def _memory_messages(memories, question: str, hist_turns: list[dict],
 def _resolve_intent(question: str, hist_turns: list[dict], t: TenantContext):
     """Routing on: one fused LLM intent call; off: legacy rewrite behaviour."""
     if not ENABLE_ROUTING:
-        rewritten, hint = _rewrite_query(question, hist_turns)
+        rewritten, hint = _rewrite_query(question, hist_turns, t)
         return router_mod.RouteResult(query=rewritten, source_hint=hint)
     intent = router_mod.classify(question, hist_turns)
+    # The intent call rides the primary endpoint on the fast model.
+    metrics_mod.record_lane_call(_r, t, "fast")
     metrics_mod.record_route(_r, t, intent.route)
     return intent
 
@@ -371,11 +402,15 @@ def health():
         "redis": "up" if pong else "down",
         "llm_model": llm_client.LLM_MODEL,
         "llm_fast_model": llm_client.LLM_FAST_MODEL,
+        "llm_economy_model": llm_client.LLM_ECONOMY_MODEL,
+        "llm_economy_fallback_model": llm_client.LLM_ECONOMY_FALLBACK_MODEL,
+        "llm_economy_configured": bool(llm_client.LLM_ECONOMY_API_KEY),
         "llm_configured": bool(llm_client.LLM_API_KEY),
         "fallback_llm_configured": bool(llm_client.FALLBACK_LLM_API_KEY),
         "cache_threshold": cache_mod.CACHE_THRESHOLD,
         "query_rewrite": ENABLE_QUERY_REWRITE,
         "routing": ENABLE_ROUTING,
+        "cache_warm": ENABLE_CACHE_WARM,
         "session_ttl_s": sessions_mod.SESSION_TTL_SECONDS,
         "memory_server": "up" if memory_mod.is_healthy() else "down",
     }
@@ -412,7 +447,8 @@ def _pipeline(question: str, session_id: str, t: TenantContext) -> dict:
 
     # Session context: verbatim recent turns + rolling summary.
     summary_note, hist_turns = sessions_mod.build_prompt_context(
-        _r, t, session_id, summarize_fn=_summarize_turns
+        _r, t, session_id,
+        summarize_fn=lambda existing, older: _summarize_turns(existing, older, t),
     )
 
     # Semantic routing: one fused intent call decides the path.
@@ -422,8 +458,8 @@ def _pipeline(question: str, session_id: str, t: TenantContext) -> dict:
     # Chitchat: persona reply, no cache/retrieval/memory search.
     if route == "chitchat":
         try:
-            answer, usage = llm_client.chat(
-                _chitchat_messages(question, hist_turns, summary_note)
+            answer, usage = _chat_on_lane(
+                t, "economy", _chitchat_messages(question, hist_turns, summary_note)
             )
         except LLMError as exc:
             metrics_mod.record_request(_r, t, errored=True)
@@ -467,8 +503,9 @@ def _pipeline(question: str, session_id: str, t: TenantContext) -> dict:
         memories = memory_mod.search_memories(question, t)
         if memories:
             try:
-                answer, usage = llm_client.chat(
-                    _memory_messages(memories, question, hist_turns, summary_note)
+                answer, usage = _chat_on_lane(
+                    t, "economy",
+                    _memory_messages(memories, question, hist_turns, summary_note),
                 )
             except LLMError as exc:
                 metrics_mod.record_request(_r, t, errored=True)
@@ -493,6 +530,8 @@ def _pipeline(question: str, session_id: str, t: TenantContext) -> dict:
         }
 
     # Doc route: hybrid search - follow-up rewrite + document scope detection.
+    # Popularity tracking feeds cache warming (no-op when warming disabled).
+    warm_mod.track_question(_r, t, question)
     rewritten_query = intent.query
     doc_filter = scope_mod.resolve_scope(_r, t, question, intent.source_hint)
     qvec = _embed_question(question)
@@ -551,7 +590,7 @@ def _pipeline(question: str, session_id: str, t: TenantContext) -> dict:
     citations = _citations_from(chunks) if chunks else []
     messages = _build_messages(question, chunks, hist_turns, memories, summary_note)
     try:
-        answer, usage = llm_client.chat(messages)
+        answer, usage = _chat_on_lane(t, "generation", messages)
     except LLMError as exc:
         latency = (time.perf_counter() - t0) * 1000
         metrics_mod.record_request(_r, t, errored=True)
@@ -610,7 +649,8 @@ def ask_stream(question: str, session_id: str | None = None,
         t0 = time.perf_counter()
 
         summary_note, hist_turns = sessions_mod.build_prompt_context(
-            _r, t, session_id, summarize_fn=_summarize_turns
+            _r, t, session_id,
+            summarize_fn=lambda existing, older: _summarize_turns(existing, older, t),
         )
 
         # Semantic routing: one fused intent call decides the path.
@@ -621,8 +661,9 @@ def ask_stream(question: str, session_id: str | None = None,
         if route == "chitchat":
             parts: list[str] = []
             try:
-                for delta in llm_client.stream_chat(
-                    _chitchat_messages(question, hist_turns, summary_note)
+                for delta in _stream_on_lane(
+                    t, "economy",
+                    _chitchat_messages(question, hist_turns, summary_note),
                 ):
                     parts.append(delta)
                     yield event("token", delta)
@@ -656,8 +697,9 @@ def ask_stream(question: str, session_id: str | None = None,
             if memories:
                 parts: list[str] = []
                 try:
-                    for delta in llm_client.stream_chat(
-                        _memory_messages(memories, question, hist_turns, summary_note)
+                    for delta in _stream_on_lane(
+                        t, "economy",
+                        _memory_messages(memories, question, hist_turns, summary_note),
                     ):
                         parts.append(delta)
                         yield event("token", delta)
@@ -679,6 +721,8 @@ def ask_stream(question: str, session_id: str | None = None,
             return
 
         # Doc route: hybrid search - follow-up rewrite + document scope detection.
+        # Popularity tracking feeds cache warming (no-op when warming disabled).
+        warm_mod.track_question(_r, t, question)
         rewritten_query = intent.query
         doc_filter = scope_mod.resolve_scope(_r, t, question, intent.source_hint)
         qvec = _embed_question(question)
@@ -739,7 +783,7 @@ def ask_stream(question: str, session_id: str | None = None,
         parts: list[str] = []
         usage: dict = {}
         try:
-            for delta in llm_client.stream_chat(messages):
+            for delta in _stream_on_lane(t, "generation", messages):
                 parts.append(delta)
                 yield event("token", delta)
         except LLMError as exc:
@@ -861,6 +905,21 @@ def get_metrics(t: TenantContext = Depends(require_tenant)):
 def flush_cache(t: TenantContext = Depends(require_tenant)):
     removed = cache_mod.flush(_r, t)
     return {"removed": removed, "tenant": t.id}
+
+
+@app.post("/cache/warm")
+def warm_cache(t: TenantContext = Depends(require_tenant)):
+    """Pre-answer this tenant's most-asked questions with the economy lane.
+
+    Runs in a background thread and acknowledges immediately; a second run
+    while one is active is dropped (logged + cache.warm_completed event).
+    """
+    if not ENABLE_CACHE_WARM:
+        raise HTTPException(
+            status_code=503, detail="cache warming is disabled (ENABLE_CACHE_WARM=0)"
+        )
+    warm_mod.start_background(_r, t, CACHE_WARM_TOP_N)
+    return {"started": True, "tenant": t.id, "top_n": CACHE_WARM_TOP_N}
 
 
 @app.get("/sessions/{session_id}/history")

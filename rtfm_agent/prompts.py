@@ -125,7 +125,8 @@ ROUTE_SYSTEM = (
     "you (\"who are you?\"). NOT questions about Git or documentation.\n"
     "- \"action\": an operational command aimed at this system itself: show "
     "your stats/metrics, list the indexed documents, clear/reset this "
-    "conversation, flush/clear the answer cache, re-index/re-ingest the docs.\n"
+    "conversation, flush/clear the answer cache, re-index/re-ingest the docs, "
+    "pre-fill/warm up the answer cache.\n"
     "- \"memory\": the user asks what you remember about them personally "
     "(\"what do you know about me?\", \"what's my project?\").\n"
     "- \"doc\": anything else - especially any Git or software-documentation "
@@ -137,7 +138,7 @@ ROUTE_SYSTEM = (
     "name, set \"source\" to the best-matching file name, else null.\n\n"
     "Reply with ONLY a JSON object:\n"
     "{\"route\": \"doc|chitchat|action|memory\", \"action\": null | "
-    "\"metrics\"|\"list_docs\"|\"clear_session\"|\"flush_cache\"|\"reingest\", "
+    "\"metrics\"|\"list_docs\"|\"clear_session\"|\"flush_cache\"|\"reingest\"|\"warm_cache\", "
     "\"query\": \"<standalone search query, empty string when route is not doc>\", "
     "\"source\": null | \"<best-matching file name>\"}"
 )
