@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTFM · Crawl Review</title>
+<style>
+  :root {
+    --bg: #0c0f0d;
+    --panel: #11150f;
+    --panel2: #161b13;
+    --line: #26301f;
+    --line-hi: #3a4a2e;
+    --ink: #cfd8c6;
+    --dim: #7a876e;
+    --faint: #55604a;
+    --acc: #9dff5c;
+    --amber: #ffb454;
+    --red: #ff6b5e;
+    --cyan: #5cdaff;
+    --mono: "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background:
+      repeating-linear-gradient(0deg, transparent 0 31px, rgba(157,255,92,.025) 31px 32px),
+      radial-gradient(1200px 500px at 70% -10%, rgba(157,255,92,.06), transparent 60%),
+      var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.45;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--panel2), var(--panel));
+  }
+  header h1 {
+    font-size: 13px; font-weight: 600; letter-spacing: .12em;
+    color: var(--acc); text-transform: uppercase;
+  }
+  header h1 span { color: var(--faint); }
+  .spacer { flex: 1; }
+  .conn { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+  .dot.live { background: var(--acc); box-shadow: 0 0 6px var(--acc); }
+  label.fld {
+    display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px;
+  }
+  input[type="text"], input[type="number"] {
+    background: #0a0d09; border: 1px solid var(--line); color: var(--ink);
+    font-family: var(--mono); font-size: 12px; padding: 4px 8px; border-radius: 3px;
+  }
+  input:focus { outline: none; border-color: var(--line-hi); }
+  #tenant { width: 110px; }
+  main {
+    flex: 1; display: grid; min-height: 0;
+    grid-template-columns: 300px minmax(340px, 1fr) minmax(300px, 1fr);
+  }
+  section { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  section:last-child { border-right: none; }
+  .sec-title {
+    padding: 8px 12px; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--faint); border-bottom: 1px solid var(--line); background: rgba(0,0,0,.25);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .pad { padding: 12px; overflow-y: auto; flex: 1; min-height: 0; }
+  form.stack { display: grid; gap: 8px; }
+  form.stack input[type="text"] { width: 100%; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button {
+    font-family: var(--mono); font-size: 12px; cursor: pointer;
+    background: var(--panel2); color: var(--ink);
+    border: 1px solid var(--line-hi); border-radius: 3px; padding: 6px 10px;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  button:hover:not(:disabled) { border-color: var(--acc); color: var(--acc); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  button.primary {
+    background: rgba(157,255,92,.08); border-color: var(--acc); color: var(--acc);
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  }
+  button.primary:hover:not(:disabled) { background: rgba(157,255,92,.18); }
+  button.danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+  .jobs { list-style: none; }
+  .jobs li {
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px;
+    margin-bottom: 6px; cursor: pointer; background: rgba(255,255,255,.01);
+  }
+  .jobs li:hover { border-color: var(--line-hi); }
+  .jobs li.sel { border-color: var(--acc); background: rgba(157,255,92,.05); }
+  .jobs .jid { color: var(--cyan); font-size: 11px; }
+  .jobs .meta { color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .badge {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 2px;
+    border: 1px solid var(--line-hi); color: var(--dim); letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .badge.awaiting_review { color: var(--amber); border-color: var(--amber); }
+  .badge.running { color: var(--cyan); border-color: var(--cyan); }
+  .badge.ingested { color: var(--acc); border-color: var(--acc); }
+  .badge.discarded, .badge.failed { color: var(--red); border-color: var(--red); }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--faint); padding: 6px 8px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: var(--panel);
+  }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 12px; }
+  tr.page { cursor: pointer; }
+  tr.page:hover td { background: rgba(255,255,255,.02); }
+  tr.page.sel td { background: rgba(157,255,92,.06); }
+  td.url { color: var(--dim); word-break: break-all; max-width: 220px; font-size: 11px; }
+  td.chars { text-align: right; color: var(--cyan); white-space: nowrap; }
+  td input[type="checkbox"] { accent-color: var(--acc); }
+  .empty { color: var(--faint); padding: 24px 12px; text-align: center; font-size: 12px; }
+  #preview-head { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  #preview-head .t { color: var(--acc); font-weight: 600; }
+  #preview-head .u { color: var(--dim); font-size: 11px; word-break: break-all; margin-top: 2px; }
+  #preview-text {
+    white-space: pre-wrap; word-break: break-word; padding: 14px 16px;
+    color: var(--ink); font-size: 12.5px; line-height: 1.6;
+  }
+  footer {
+    display: flex; gap: 10px; align-items: center;
+    padding: 10px 16px; border-top: 1px solid var(--line);
+    background: linear-gradient(0deg, var(--panel2), var(--panel));
+  }
+  #status { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status.err { color: var(--red); }
+  #status.ok { color: var(--acc); }
+  dialog {
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line-hi);
+    border-radius: 4px; padding: 20px; max-width: 520px; font-family: var(--mono);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.65); }
+  dialog h2 { font-size: 13px; color: var(--acc); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 10px; }
+  dialog pre { font-size: 11.5px; color: var(--dim); max-height: 260px; overflow-y: auto; white-space: pre-wrap; }
+  dialog .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RTFM <span>//</span> Crawl Review</h1>
+  <span class="spacer"></span>
+  <label class="fld">tenant <input type="text" id="tenant" placeholder="acme" spellcheck="false"></label>
+  <span class="conn"><span class="dot" id="conn-dot"></span><span id="conn-label">SSE offline</span></span>
+</header>
+
+<main>
+  <section>
+    <div class="sec-title">New crawl</div>
+    <div class="pad">
+      <form class="stack" id="crawl-form">
+        <input type="text" id="seed" placeholder="https://docs.example.com/guide" spellcheck="false" required>
+        <div class="row">
+          <label class="fld">pages <input type="number" id="max-pages" value="" min="1" max="500" placeholder="50"></label>
+          <label class="fld">depth <input type="number" id="max-depth" value="" min="0" max="10" placeholder="3"></label>
+        </div>
+        <input type="text" id="prefix" placeholder="path prefix, e.g. /docs (optional)" spellcheck="false">
+        <label class="fld"><input type="checkbox" id="auto-ingest" style="accent-color:var(--acc)"> auto-ingest (skip review)</label>
+        <button type="submit" class="primary" id="btn-start">Start crawl</button>
+      </form>
+      <div class="sec-title" style="margin:16px -12px 8px; border-left:0; border-right:0;">Jobs</div>
+      <ul class="jobs" id="job-list"><li class="empty">set a tenant to begin</li></ul>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-title"><span>Staged pages</span><span id="page-count"></span></div>
+    <div class="pad" id="pages-wrap"><div class="empty">select a job awaiting review</div></div>
+  </section>
+
+  <section>
+    <div class="sec-title">Extracted preview</div>
+    <div class="pad" id="preview-wrap"><div class="empty">click a page to verify its extraction</div></div>
+  </section>
+</main>
+
+<footer>
+  <button class="primary" id="btn-approve" disabled>Approve &amp; ingest</button>
+  <button class="danger" id="btn-discard" disabled>Discard job</button>
+  <span class="spacer"></span>
+  <span id="status">ready</span>
+</footer>
+
+<dialog id="confirm-discard">
+  <h2>Discard this crawl?</h2>
+  <pre id="discard-summary"></pre>
+  <div class="actions">
+    <button id="discard-cancel">Keep it</button>
+    <button class="danger" id="discard-confirm">Discard</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { tenant: null, jobs: [], jobId: null, detail: null, previewId: null };
+
+function setStatus(msg, cls = "") {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = cls;
+}
+
+function headers() {
+  return { "X-Tenant-Id": state.tenant, "Content-Type": "application/json" };
+}
+
+async function api(path, opts = {}) {
+  const resp = await fetch(path, { headers: headers(), ...opts });
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(body.detail || `${resp.status} ${resp.statusText}`);
+  return body;
+}
+
+function saveTenant() {
+  state.tenant = $("tenant").value.trim().toLowerCase();
+  localStorage.setItem("rtfm.tenant", state.tenant);
+  connectSSE();
+  refreshJobs();
+}
+
+function renderJobs() {
+  const list = $("job-list");
+  if (!state.tenant) { list.innerHTML = `<li class="empty">set a tenant to begin</li>`; return; }
+  if (!state.jobs.length) { list.innerHTML = `<li class="empty">no crawl jobs yet</li>`; return; }
+  list.innerHTML = state.jobs.map((j) => `
+    <li data-id="${j.job_id}" class="${j.job_id === state.jobId ? "sel" : ""}">
+      <div class="jid">${j.job_id}</div>
+      <div class="meta"><span class="badge ${j.status}">${j.status}</span>
+        &nbsp;${j.pages_staged ?? j.approved ?? 0} staged · seed ${(j.seed_url || "").slice(0, 34)}</div>
+    </li>`).join("");
+  list.querySelectorAll("li").forEach((li) =>
+    li.addEventListener("click", () => selectJob(li.dataset.id)));
+}
+
+async function refreshJobs() {
+  if (!state.tenant) return;
+  try {
+    const data = await api("/crawl/jobs");
+    state.jobs = data.jobs || [];
+    renderJobs();
+  } catch (err) { setStatus(err.message, "err"); }
+}
+
+async function selectJob(jobId) {
+  state.jobId = jobId;
+  state.previewId = null;
+  renderJobs();
+  try {
+    state.detail = await api(`/crawl/jobs/${jobId}`);
+  } catch (err) { setStatus(err.message, "err"); return; }
+  renderPages();
+  $("preview-wrap").innerHTML = `<div class="empty">click a page to verify its extraction</div>`;
+  const actionable = ["awaiting_review"].includes(state.detail.status);
+  $("btn-approve").disabled = !actionable;
+  $("btn-discard").disabled = !actionable && !["failed"].includes(state.detail.status);
+}
+
+function renderPages() {
+  const wrap = $("pages-wrap");
+  const pages = state.detail?.pages || [];
+  $("page-count").textContent = pages.length ? `${pages.length} pages` : "";
+  if (!state.detail) { wrap.innerHTML = `<div class="empty">select a job awaiting review</div>`; return; }
+  if (!pages.length) {
+    wrap.innerHTML = `<div class="empty">no usable pages were staged<br>
+      summary: ${JSON.stringify(state.detail.summary || {})}</div>`;
+    return;
+  }
+  wrap.innerHTML = `<table>
+    <thead><tr><th>keep</th><th>title</th><th>chars</th></tr></thead>
+    <tbody>${pages.map((p) => `
+      <tr class="page ${p.page_id === state.previewId ? "sel" : ""}" data-pid="${p.page_id}">
+        <td><input type="checkbox" checked data-pid="${p.page_id}"></td>
+        <td>${esc(p.title || "(untitled)")}<br><span class="td-url url">${esc(p.url)}</span></td>
+        <td class="chars">${p.chars}</td>
+      </tr>`).join("")}</tbody></table>`;
+  wrap.querySelectorAll("tr.page").forEach((tr) =>
+    tr.addEventListener("click", () => previewPage(tr.dataset.pid)));
+  updateApproveLabel();
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function keptIds() {
+  return [...document.querySelectorAll("#pages-wrap input[type=checkbox]:checked")]
+    .map((cb) => cb.dataset.pid);
+}
+
+function updateApproveLabel() {
+  const total = document.querySelectorAll("#pages-wrap input[type=checkbox]").length;
+  const kept = keptIds().length;
+  $("btn-approve").textContent =
+    total && kept < total ? `Approve ${kept}/${total} & ingest` : `Approve & ingest (${kept})`;
+}
+
+async function previewPage(pid) {
+  state.previewId = pid;
+  document.querySelectorAll("tr.page").forEach((tr) =>
+    tr.classList.toggle("sel", tr.dataset.pid === pid));
+  try {
+    const p = await api(`/crawl/jobs/${state.jobId}/pages/${pid}`);
+    $("preview-wrap").innerHTML = `
+      <div id="preview-head"><div class="t">${esc(p.title)}</div>
+      <div class="u">${esc(p.url)} · ${p.chars} chars extracted</div></div>
+      <div id="preview-text">${esc(p.text)}</div>`;
+  } catch (err) { setStatus(err.message, "err"); }
+}
+
+let evtSource = null;
+function connectSSE() {
+  if (evtSource) { evtSource.close(); evtSource = null; }
+  const dot = $("conn-dot"), label = $("conn-label");
+  if (!state.tenant) { dot.classList.remove("live"); label.textContent = "SSE offline"; return; }
+  evtSource = new EventSource(`/events/stream?tenant=${encodeURIComponent(state.tenant)}`);
+  evtSource.onopen = () => { dot.classList.add("live"); label.textContent = "SSE live"; };
+  evtSource.onerror = () => { dot.classList.remove("live"); label.textContent = "SSE reconnecting…"; };
+  evtSource.onmessage = () => {};
+  for (const kind of ["crawl.staged", "crawl.failed", "ingest.completed"]) {
+    evtSource.addEventListener(kind, () => {
+      refreshJobs();
+      if (state.jobId) selectJob(state.jobId);
+      setStatus(`event: ${kind}`, kind === "crawl.failed" ? "err" : "ok");
+    });
+  }
+}
+
+$("tenant").addEventListener("change", saveTenant);
+
+$("crawl-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!state.tenant) { setStatus("set a tenant first", "err"); return; }
+  const payload = { start_url: $("seed").value.trim(), auto_ingest: $("auto-ingest").checked };
+  if ($("max-pages").value) payload.max_pages = Number($("max-pages").value);
+  if ($("max-depth").value) payload.max_depth = Number($("max-depth").value);
+  const prefix = $("prefix").value.trim();
+  if (prefix) payload.path_prefix = prefix;
+  $("btn-start").disabled = true;
+  setStatus("starting crawl…");
+  try {
+    const res = await api("/crawl", { method: "POST", body: JSON.stringify(payload) });
+    setStatus(`crawl ${res.job_id} started`, "ok");
+    setTimeout(refreshJobs, 400);
+    setTimeout(selectJob.bind(null, res.job_id), 1200);
+  } catch (err) { setStatus(err.message, "err"); }
+  finally { $("btn-start").disabled = false; }
+});
+
+$("btn-approve").addEventListener("click", async () => {
+  if (!state.jobId) return;
+  const exclude = document.querySelectorAll("#pages-wrap input[type=checkbox]").length
+    ? [...document.querySelectorAll("#pages-wrap input[type=checkbox]")]
+        .filter((cb) => !cb.checked).map((cb) => cb.dataset.pid)
+    : [];
+  $("btn-approve").disabled = true;
+  setStatus("merging pages + re-ingesting corpus…");
+  try {
+    const res = await api(`/crawl/jobs/${state.jobId}/approve`, {
+      method: "POST", body: JSON.stringify({ exclude }),
+    });
+    const ing = res.ingestion || {};
+    setStatus(`approved ${res.approved}, removed ${res.removed_files} · corpus v${ing.corpus_version}, ${ing.chunks_stored} chunks`, "ok");
+    await refreshJobs();
+    await selectJob(state.jobId);
+  } catch (err) { setStatus(err.message, "err"); $("btn-approve").disabled = false; }
+});
+
+$("btn-discard").addEventListener("click", () => {
+  if (!state.jobId) return;
+  const j = state.jobs.find((x) => x.job_id === state.jobId) || {};
+  $("discard-summary").textContent =
+    `job ${state.jobId}\nseed: ${j.seed_url || "?"}\nstaged pages will be deleted; nothing was ever indexed.`;
+  $("confirm-discard").showModal();
+});
+$("discard-cancel").addEventListener("click", () => $("confirm-discard").close());
+$("discard-confirm").addEventListener("click", async () => {
+  $("confirm-discard").close();
+  try {
+    await api(`/crawl/jobs/${state.jobId}`, { method: "DELETE" });
+    setStatus("job discarded", "ok");
+    state.jobId = null; state.detail = null;
+    renderPages();
+    $("preview-wrap").innerHTML = `<div class="empty">click a page to verify its extraction</div>`;
+    $("btn-approve").disabled = true; $("btn-discard").disabled = true;
+    refreshJobs();
+  } catch (err) { setStatus(err.message, "err"); }
+});
+
+document.addEventListener("change", (ev) => {
+  if (ev.target.matches('#pages-wrap input[type="checkbox"]')) updateApproveLabel();
+});
+
+(function init() {
+  const saved = localStorage.getItem("rtfm.tenant");
+  if (saved) { $("tenant").value = saved; saveTenant(); }
+})();
+</script>
+</body>
+</html>

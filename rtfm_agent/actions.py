@@ -87,6 +87,9 @@ def _metrics_report(r: Redis, t: TenantContext, session_id: str) -> str:
         f"(est. cost ${snap['estimated_cost_usd']:.4f})",
         f"- Stale-documentation answers served: {snap.get('stale_answers_served', 0)}",
         f"- MCP tool calls: {snap.get('mcp_calls_total', 0)}",
+        f"- Web crawls: {snap.get('crawl_jobs_total', 0)} jobs, "
+        f"{snap.get('crawl_pages_fetched_total', 0)} pages fetched "
+        f"({snap.get('crawl_failures_total', 0)} failures)",
     ]
     routes = (
         f"doc {int(snap.get('route_doc_total', 0))}, "

@@ -15,6 +15,21 @@ from rtfm_agent import events as events_mod
 from rtfm_agent import versions as versions_mod
 
 
+def collect_docs(docs_dir: str | Path, t: TenantContext) -> list[dict]:
+    """Primary corpus plus this tenant's approved web-crawl pages.
+
+    Web pages live in their own root (docs/web/<org>/<host>/<page>.md) and
+    are namespaced `web/<host>/<page>.md` so they can never collide with
+    local files and citations visibly mark web-sourced chunks.
+    """
+    docs = load_asc_files(str(docs_dir), recursive=True)
+    web_root = versions_mod.web_docs_root(t)
+    if web_root.is_dir():
+        for doc in load_asc_files(str(web_root), recursive=True):
+            docs.append({**doc, "source_file": f"web/{doc['source_file']}"})
+    return docs
+
+
 def delete_source_keys(r: Redis, t: TenantContext):
     """Remove this tenant's previously stored chunks (t:{org}:doc:* keys)
     so re-ingestion leaves no stale data."""
@@ -164,7 +179,7 @@ def run_ingestion(r: Redis, t: TenantContext, docs_dir: str | Path = None,
             print(msg, flush=True)
 
     log("[1/4] Loading documentation files...")
-    docs = load_asc_files(docs_dir, recursive=True)
+    docs = collect_docs(docs_dir, t)
     log(f"      {len(docs)} files")
 
     log("[2/4] Chunking documents...")

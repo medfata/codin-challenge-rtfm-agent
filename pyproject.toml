@@ -16,6 +16,7 @@ dependencies = [
     "uvicorn>=0.34",
     "pydantic>=2.9",
     "mcp>=1.26",
+    "trafilatura>=2.0",
 ]
 
 [tool.setuptools]

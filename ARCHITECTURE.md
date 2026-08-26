@@ -95,6 +95,28 @@ Verification: `scripts/step12_check_multi_model.py`.
 
 Tradeoffs: warm answers are standalone (no session/persona context); chitchat/synthesis ride a small model in exchange for provider-outage resilience; AMS has no native fallback so Google-quota exhaustion pauses memory promotion until reset (escape hatch documented in docker-compose).
 
+## Step 13 - Web crawl with staged review
+
+`POST /crawl` discovers documentation on a website: sitemap.xml fast-path (one level of sitemap-index expansion) first, then a same-host breadth-first link frontier with optional `path_prefix` constraint, bounded by `max_pages`/`max_depth` (hard-capped by `CRAWL_HARD_PAGE_CAP`). Every request passes the SSRF guard (DNS-resolve the host; private/loopback/link-local/reserved targets are rejected unless `CRAWL_ALLOW_PRIVATE_HOSTS=1`, which exists for tests only), robots.txt compliance, politeness delay, response-size and content-type checks; trafilatura extracts readable markdown plus the page title.
+
+Pages are **staged** under `docs/web/_staging/<org>/<job>/` - nothing touches the corpus until a human verifies them. The review UI at `/crawl/review` is a single self-contained static page (vanilla JS, served same-origin by FastAPI): it starts crawls, lists staged jobs, previews each page's extracted text, and approves/discards; live updates ride the Step 11 event stream (`crawl.staged` / `crawl.failed` alongside reused `ingest.*`). Approval (`POST /crawl/jobs/{id}/approve`, optional `exclude` list) copies kept pages to `docs/web/<org>/<host>/<slug>-<pid>.md` (leading `== Title` line so the standard loader picks up headings), deletes previously-approved files for vanished/excluded pages on covered hosts, then triggers a normal `run_ingestion()` - one merged corpus, so versioning, stale-cache warnings, drift scanning, hybrid search and citations all apply unchanged (web chunks are namespaced `web/<host>/<page>.md`). `auto_ingest=true` skips the review gate for trusted sources. Job lifecycle lives in `t:{org}:crawl:{job_id}` + a ZSET index; unreviewed staging sweeps after `CRAWL_STAGE_TTL_H`.
+
+Config: `ENABLE_WEB_CRAWL`, `WEB_DOCS_DIR`, `CRAWL_MAX_PAGES`, `CRAWL_MAX_DEPTH`, `CRAWL_HARD_PAGE_CAP`, `CRAWL_DELAY_MS`, `CRAWL_TIMEOUT_S`, `CRAWL_MAX_BYTES`, `CRAWL_MIN_TEXT_CHARS`, `CRAWL_ALLOW_PRIVATE_HOSTS`, `CRAWL_STAGE_TTL_H`.
+Verification: `scripts/step13_check_crawl.py`.
+
+Tradeoffs: in-process background thread (no durable queue), one crawl per tenant at a time; approval runs a full-corpus re-ingest synchronously (same semantics as `POST /ingest`); extracted text approximates the source formatting; cross-host documentation sites need a future allowlist parameter.
+
+## Step 13 - Web crawl with staged review
+
+`POST /crawl` discovers documentation on a website: sitemap.xml fast-path (one level of sitemap-index expansion) first, then a same-host breadth-first link frontier with optional `path_prefix` constraint, bounded by `max_pages`/`max_depth` (hard-capped by `CRAWL_HARD_PAGE_CAP`). Every request passes the SSRF guard (DNS-resolve the host; private/loopback/link-local/reserved targets are rejected unless `CRAWL_ALLOW_PRIVATE_HOSTS=1`, which exists for tests only), robots.txt compliance, politeness delay, response-size and content-type checks; trafilatura extracts readable markdown plus the page title.
+
+Pages are **staged** under `docs/web/_staging/<org>/<job>/` - nothing touches the corpus until a human verifies them. The review UI at `/crawl/review` is a single self-contained static page (vanilla JS, served same-origin by FastAPI): it starts crawls, lists staged jobs, previews each page's extracted text, and approves/discards; live updates ride the Step 11 event stream (`crawl.staged` / `crawl.failed` alongside reused `ingest.*`). Approval (`POST /crawl/jobs/{id}/approve`, optional `exclude` list) copies kept pages to `docs/web/<org>/<host>/<slug>-<pid>.md` (leading `== Title` line so the standard loader picks up headings), deletes previously-approved files for vanished/excluded pages on covered hosts, then triggers a normal `run_ingestion()` - one merged corpus, so versioning, stale-cache warnings, drift scanning, hybrid search and citations all apply unchanged (web chunks are namespaced `web/<host>/<page>.md`). `auto_ingest=true` skips the review gate for trusted sources. Job lifecycle lives in `t:{org}:crawl:{job_id}` + a ZSET index; unreviewed staging sweeps after `CRAWL_STAGE_TTL_H`.
+
+Config: `ENABLE_WEB_CRAWL`, `WEB_DOCS_DIR`, `CRAWL_MAX_PAGES`, `CRAWL_MAX_DEPTH`, `CRAWL_HARD_PAGE_CAP`, `CRAWL_DELAY_MS`, `CRAWL_TIMEOUT_S`, `CRAWL_MAX_BYTES`, `CRAWL_MIN_TEXT_CHARS`, `CRAWL_ALLOW_PRIVATE_HOSTS`, `CRAWL_STAGE_TTL_H`.
+Verification: `scripts/step13_check_crawl.py`.
+
+Tradeoffs: in-process background thread (no durable queue), one crawl per tenant at a time; approval runs a full-corpus re-ingest synchronously (same semantics as `POST /ingest`); extracted text approximates the source formatting; cross-host documentation sites need a future allowlist parameter.
+
 ## LLM lanes & quotas (verified Aug 2026)
 
 | Lane | Model | Free-tier ceiling |
@@ -111,8 +133,9 @@ Quotas are enforced per lane, so the fast lane never competes with generation tr
 
 ```mermaid
 flowchart LR
-    subgraph INGEST["INGESTION (Step 1 - to build)"]
+    subgraph INGEST["INGESTION (Steps 1+13)"]
         DOCS[Documentation<br/>.asc files] --> CHUNK[Chunker<br/>~500 tokens + overlap]
+        WEB[Crawled pages .md<br/>docs/web/org - approved<br/>via /crawl/review] --> CHUNK
         CHUNK --> FE1[fastembed<br/>bge-small-en<br/>384 dims]
         FE1 --> VIDX[(REDIS - Docs index<br/>chunks + embedding +<br/>metadata: file, heading, pos)]
     end
@@ -131,7 +154,7 @@ flowchart LR
         RET --> CTX
         MEM[Agent Memory Server<br/>long-term memories] --> CTX
         MEM -.->|recall| MEMR
-        CTX --> LLM[LLM lanes<br/>gen: gpt-oss-120b<br/>economy: flash-lite -> qwen-27b<br/>fallback: Gemini flash]
+        CTX --> LLM[LLM lanes<br/>gen: gpt-oss-120b<br/>economy: flash-lite -> llama-8b<br/>fallback: Gemini flash]
         LLM --> OUT
         OUT --> CACHE
         OUT --> SESS
@@ -164,5 +187,7 @@ flowchart LR
 | Multi-tenant scoping | X-Tenant-Id -> prefixed keys/indexes + AMS namespaces | Step 8 |
 | Document versioning | content-hash corpus versions, stale-cache + drift warnings | Step 9 |
 | MCP exposure | assistant as MCP tool server at /mcp (5 tools + resource) | Step 10 |
-| Real-time events | per-tenant Redis Streams -> SSE feed with Last-Event-ID replay | Step 11 |
 | Multi-model strategy | tri-lane LLM routing (generation/fast/economy) + economy-lane cache warming | Step 12 |
+| Real-time events | per-tenant Redis Streams -> SSE feed with Last-Event-ID replay | Step 11 |
+| Web crawl + review UI | sitemap/BFS discovery -> staged review at /crawl/review -> approved merge into tenant corpus | Step 13 |
+| Web crawl + review UI | sitemap/BFS discovery -> staged review at /crawl/review -> approved merge into tenant corpus | Step 13 |

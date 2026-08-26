@@ -3,11 +3,17 @@
 import os
 from pathlib import Path
 
+# File extensions treated as documentation sources. Step 13 web-crawl pages
+# are persisted as markdown (.md) and merged into the same corpus.
+DOC_EXTENSIONS = (".asc", ".md")
+
 
 def extract_heading(content: str) -> str | None:
     """Extract the first heading line from AsciiDoc content.
 
     Looks for == Heading (chapter level) or === Sub-heading (section level).
+    Markdown h1 (`# Heading`) is recognised too so crawled pages stored as
+    .md surface their titles.
     """
     for line in content.splitlines():
         stripped = line.strip()
@@ -15,14 +21,19 @@ def extract_heading(content: str) -> str | None:
             return stripped[3:].strip()
         if stripped.startswith("=== "):
             return stripped[4:].strip()
+        if stripped.startswith("# ") and not stripped.startswith("##"):
+            return stripped[2:].strip()
     return None
 
 
-def load_asc_files(directory: str, max_files: int | None = None, recursive: bool = False) -> list[dict]:
-    """Load .asc files from directory.
+def load_asc_files(directory: str, max_files: int | None = None,
+                   recursive: bool = False,
+                   extensions: tuple[str, ...] = DOC_EXTENSIONS) -> list[dict]:
+    """Load documentation files from directory.
 
     By default only top-level files are loaded (the sample docs). Set
-    recursive=True to walk subdirectories as well.
+    recursive=True to walk subdirectories as well. `extensions` selects
+    which suffixes count as docs (AsciiDoc + markdown since Step 13).
 
     Returns list of dicts with keys:
         - source_file: path relative to `directory`, posix-style
@@ -32,29 +43,36 @@ def load_asc_files(directory: str, max_files: int | None = None, recursive: bool
     """
     docs = []
     base = Path(directory)
-    pattern = base.rglob("*.asc") if recursive else base.glob("*.asc")
 
-    for asc_file in sorted(pattern):
-        # skip .git directory
-        if ".git" in asc_file.parts:
-            continue
+    def iter_paths():
+        seen = set()
+        for ext in extensions:
+            pattern = base.rglob(f"*{ext}") if recursive else base.glob(f"*{ext}")
+            for path in sorted(pattern):
+                if path in seen or ".git" in path.parts:
+                    continue
+                seen.add(path)
+                yield path
 
+    for doc_file in iter_paths():
         try:
-            content = asc_file.read_text(encoding="utf-8", errors="replace")
+            content = doc_file.read_text(encoding="utf-8", errors="replace")
         except UnicodeDecodeError:
             try:
-                content = asc_file.read_text(encoding="latin-1", errors="replace")
+                content = doc_file.read_text(encoding="latin-1", errors="replace")
             except Exception:
                 continue
+        except OSError:
+            continue
 
         heading = extract_heading(content)
         # fallback: use stem (filename without extension) as heading
         if heading is None:
-            heading = asc_file.stem.replace("_", " ")
+            heading = doc_file.stem.replace("_", " ")
 
         # Relative posix path keeps keys unique when two dirs contain
         # same-named files (e.g., book/01-introduction/.../command-line.asc)
-        source_file = asc_file.relative_to(base).as_posix()
+        source_file = doc_file.relative_to(base).as_posix()
 
         docs.append({
             "source_file": source_file,

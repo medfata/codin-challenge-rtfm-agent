@@ -113,6 +113,25 @@ def record_mcp_call(r: Redis, t: TenantContext) -> None:
         logging.getLogger(__name__).warning("metrics write failed: %s", exc)
 
 
+def record_crawl(r: Redis, t: TenantContext, pages_fetched: int = 0,
+                 failures: int = 0, discarded: bool = False) -> None:
+    """Count one finished crawl job plus its fetch/failure volumes."""
+    try:
+        pipe = r.pipeline(transaction=False)
+        pipe.hincrby(t.metrics_key, "crawl_jobs_total", 1)
+        if pages_fetched:
+            pipe.hincrby(t.metrics_key, "crawl_pages_fetched_total", pages_fetched)
+        if failures:
+            pipe.hincrby(t.metrics_key, "crawl_failures_total", failures)
+        if discarded:
+            pipe.hincrby(t.metrics_key, "crawl_discarded_total", 1)
+        pipe.execute()
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("metrics write failed: %s", exc)
+
+
 def snapshot(r: Redis, t: TenantContext) -> dict:
     data = r.hgetall(t.metrics_key)
 
@@ -148,4 +167,8 @@ def snapshot(r: Redis, t: TenantContext) -> dict:
         "llm_calls_economy_total": int(num("llm_calls_economy_total")),
         "cache_warm_runs_total": int(num("cache_warm_runs_total")),
         "cache_warm_answers_total": int(num("cache_warm_answers_total")),
+        "crawl_jobs_total": int(num("crawl_jobs_total")),
+        "crawl_pages_fetched_total": int(num("crawl_pages_fetched_total")),
+        "crawl_failures_total": int(num("crawl_failures_total")),
+        "crawl_discarded_total": int(num("crawl_discarded_total")),
     }

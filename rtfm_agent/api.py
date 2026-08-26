@@ -24,6 +24,7 @@ from redis.asyncio import Redis as AsyncRedis
 
 from rtfm_agent import actions as actions_mod
 from rtfm_agent import cache as cache_mod
+from rtfm_agent import crawler as crawler_mod
 from rtfm_agent import events as events_mod
 from rtfm_agent import memory as memory_mod
 from rtfm_agent import metrics as metrics_mod
@@ -40,6 +41,7 @@ from rtfm_agent.config import (
     ENABLE_MCP,
     ENABLE_QUERY_REWRITE,
     ENABLE_ROUTING,
+    ENABLE_WEB_CRAWL,
     EVENTS_CORS_ORIGINS,
     EVENTS_HEARTBEAT_S,
     REDIS_URL,
@@ -222,6 +224,10 @@ class MetricsResponse(BaseModel):
     llm_calls_economy_total: int = 0
     cache_warm_runs_total: int = 0
     cache_warm_answers_total: int = 0
+    crawl_jobs_total: int = 0
+    crawl_pages_fetched_total: int = 0
+    crawl_failures_total: int = 0
+    crawl_discarded_total: int = 0
 
 
 def _embed_question(text: str) -> bytes:
@@ -941,6 +947,113 @@ def delete_session(session_id: str, t: TenantContext = Depends(require_tenant)):
     if not removed:
         raise HTTPException(status_code=404, detail="session not found")
     return {"session_id": session_id, "deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Step 13: web crawl - discover, stage for review, approve into the corpus
+# ---------------------------------------------------------------------------
+
+class CrawlRequest(BaseModel):
+    start_url: str = Field(min_length=9, max_length=2000)
+    max_pages: int | None = Field(default=None, ge=1, le=500)
+    max_depth: int | None = Field(default=None, ge=0, le=10)
+    path_prefix: str | None = Field(default=None, max_length=500)
+    # Trusted-source escape hatch: skip the review gate entirely.
+    auto_ingest: bool = False
+
+
+class CrawlApproveRequest(BaseModel):
+    exclude: list[str] = Field(default_factory=list, max_length=1000)
+
+
+def _crawl_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, crawler_mod.JobNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, crawler_mod.JobStateError):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/crawl", status_code=202)
+def start_crawl(req: CrawlRequest,
+                t: TenantContext = Depends(require_tenant)):
+    """Crawl a documentation site and stage extracted pages for review.
+
+    Nothing is indexed until POST /crawl/jobs/{id}/approve (or auto_ingest).
+    """
+    if not ENABLE_WEB_CRAWL:
+        raise HTTPException(
+            status_code=503, detail="web crawling is disabled (ENABLE_WEB_CRAWL=0)"
+        )
+    try:
+        job = crawler_mod.start_job(
+            _r, t, req.start_url, max_pages=req.max_pages,
+            max_depth=req.max_depth, path_prefix=req.path_prefix,
+            auto_ingest=req.auto_ingest,
+        )
+    except crawler_mod.CrawlError as exc:
+        raise _crawl_error(exc)
+    return {"job_id": job["job_id"], "status": job["status"], "tenant": t.id,
+            "seed_url": job["seed_url"], "max_pages": job["max_pages"],
+            "max_depth": job["max_depth"],
+            "review_url": "/crawl/review" if not req.auto_ingest else None}
+
+
+@app.get("/crawl/jobs")
+def list_crawl_jobs(t: TenantContext = Depends(require_tenant)):
+    return {"tenant": t.id, "jobs": crawler_mod.list_jobs(_r, t)}
+
+
+@app.get("/crawl/review", include_in_schema=False)
+def crawl_review_page():
+    """Serve the staged-crawl review UI same-origin (no CORS setup needed)."""
+    page = Path(__file__).parent / "static" / "crawl_review.html"
+    if not page.is_file():
+        raise HTTPException(status_code=404, detail="review page not found")
+    return FileResponse(page, media_type="text/html")
+
+
+@app.get("/crawl/jobs/{job_id}")
+def get_crawl_job(job_id: str, t: TenantContext = Depends(require_tenant)):
+    try:
+        return crawler_mod.get_job(_r, t, job_id)
+    except crawler_mod.CrawlError as exc:
+        raise _crawl_error(exc)
+
+
+@app.get("/crawl/jobs/{job_id}/pages/{page_id}")
+def preview_crawl_page(job_id: str, page_id: str,
+                       t: TenantContext = Depends(require_tenant)):
+    """Full extracted text of one staged page - the human verification step."""
+    try:
+        return crawler_mod.read_page(t, job_id, page_id)
+    except crawler_mod.CrawlError as exc:
+        raise _crawl_error(exc)
+
+
+@app.post("/crawl/jobs/{job_id}/approve")
+def approve_crawl_job(job_id: str, req: CrawlApproveRequest | None = None,
+                      t: TenantContext = Depends(require_tenant)):
+    """Merge kept pages into the corpus and re-ingest this tenant's docs."""
+    try:
+        approved = crawler_mod.approve_job(_r, t, job_id,
+                                           exclude_ids=req.exclude if req else [])
+    except crawler_mod.CrawlError as exc:
+        raise _crawl_error(exc)
+    from rtfm_agent.ingest import run_ingestion
+
+    summary = run_ingestion(_r, t, docs_dir=str(_resolve_docs_dir(t, None)))
+    crawler_mod.mark_ingested(_r, t, job_id)
+    return {"job_id": job_id, "tenant": t.id, **approved, "ingestion": summary}
+
+
+@app.delete("/crawl/jobs/{job_id}")
+def discard_crawl_job(job_id: str, t: TenantContext = Depends(require_tenant)):
+    try:
+        result = crawler_mod.discard_job(_r, t, job_id)
+    except crawler_mod.CrawlError as exc:
+        raise _crawl_error(exc)
+    return {**result, "tenant": t.id}
 
 
 # Must come after every REST route: a root Mount swallows all later routes.

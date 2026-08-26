@@ -143,3 +143,27 @@ TENANTS_OPEN = _TENANTS_RAW == "*"
 TENANT_ALLOWLIST = frozenset(
     t.strip().lower() for t in _TENANTS_RAW.split(",") if t.strip()
 )
+
+# Step 13: web crawl. POST /crawl discovers documentation on a website
+# (sitemap first, then same-host link BFS), extracts readable text, and
+# STAGES it for human review; approval merges pages into the tenant corpus
+# (docs/web/<org>/) and triggers a normal ingestion.
+ENABLE_WEB_CRAWL = os.getenv("ENABLE_WEB_CRAWL", "1") == "1"
+# Root for approved crawl content and per-job staging dirs (<root>/<org>/...).
+WEB_DOCS_DIR = os.getenv("WEB_DOCS_DIR", "docs/web")
+# Runaway guards: page count / link depth caps (a request may lower them).
+CRAWL_MAX_PAGES = int(os.getenv("CRAWL_MAX_PAGES", "50"))
+CRAWL_MAX_DEPTH = int(os.getenv("CRAWL_MAX_DEPTH", "3"))
+# Hard request cap per crawl regardless of requested max_pages.
+CRAWL_HARD_PAGE_CAP = int(os.getenv("CRAWL_HARD_PAGE_CAP", "500"))
+# Politeness: sleep between fetches; per-request timeout.
+CRAWL_DELAY_MS = int(os.getenv("CRAWL_DELAY_MS", "750"))
+CRAWL_TIMEOUT_S = float(os.getenv("CRAWL_TIMEOUT_S", "15"))
+# Response body cap (bytes) and minimum extracted text to keep a page.
+CRAWL_MAX_BYTES = int(os.getenv("CRAWL_MAX_BYTES", str(2 * 1024 * 1024)))
+CRAWL_MIN_TEXT_CHARS = int(os.getenv("CRAWL_MIN_TEXT_CHARS", "200"))
+# SSRF guard rejects private/loopback/link-local targets; the override exists
+# for tests crawling a localhost fixture - never enable it in production.
+CRAWL_ALLOW_PRIVATE_HOSTS = os.getenv("CRAWL_ALLOW_PRIVATE_HOSTS", "0") == "1"
+# Staged jobs awaiting review expire after this many hours (swept lazily).
+CRAWL_STAGE_TTL_H = float(os.getenv("CRAWL_STAGE_TTL_H", "24"))

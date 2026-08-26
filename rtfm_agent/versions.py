@@ -32,7 +32,9 @@ from rtfm_agent.config import (
     DRIFT_SCAN_TTL_S,
     ENABLE_DOC_VERSIONING,
     ENABLE_DRIFT_WARNING,
+    WEB_DOCS_DIR,
 )
+from rtfm_agent.documents import DOC_EXTENSIONS
 from rtfm_agent.tenancy import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -62,14 +64,22 @@ def compute_digest(file_hashes: dict[str, str]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def web_docs_root(t: TenantContext) -> Path:
+    """This tenant's crawled-pages root (Step 13), e.g. docs/web/<org>/."""
+    return Path(WEB_DOCS_DIR) / t.id
+
+
 def scan_disk(docs_dir: str | Path) -> dict[str, str]:
-    """sha256 of every .asc file under docs_dir (recursive), posix relpaths."""
+    """sha256 of every documentation file under docs_dir, posix relpaths."""
     base = Path(docs_dir)
     out: dict[str, str] = {}
     if not base.is_dir():
         return out
-    for path in sorted(base.rglob("*.asc")):
-        if ".git" in path.parts:
+    paths: set[Path] = set()
+    for ext in DOC_EXTENSIONS:
+        paths.update(base.rglob(f"*{ext}"))
+    for path in sorted(paths):
+        if ".git" in path.parts or not path.is_file():
             continue
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
@@ -242,6 +252,16 @@ def scan_drift(r: Redis, t: TenantContext, docs_dir: str | Path,
         return empty
 
     disk = scan_disk(resolved)
+    # Step 13: crawled pages live outside the primary docs dir but are part
+    # of the same corpus (indexed as `web/<host>/<page>.md`). Scan them too,
+    # or every approved page would permanently show up as "removed" drift.
+    try:
+        web_root = web_docs_root(t)
+        if web_root.is_dir():
+            for rel, sha in scan_disk(web_root).items():
+                disk[f"web/{rel}"] = sha
+    except Exception as exc:
+        logger.warning("drift scan of web corpus failed (non-fatal): %s", exc)
     report = {
         "changed": sorted(p for p in disk if p in indexed and disk[p] != indexed[p]),
         "added": sorted(p for p in disk if p not in indexed),
