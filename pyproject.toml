@@ -15,9 +15,28 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.34",
     "pydantic>=2.9",
+    "pydantic-settings>=2.7",
     "mcp>=1.26",
     "trafilatura>=2.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
 [tool.setuptools]
-packages = ["rtfm_agent"]
+packages = [
+    "rtfm_agent",
+    "rtfm_agent.api",
+    "rtfm_agent.common",
+    "rtfm_agent.crawler",
+    "rtfm_agent.ingestion",
+    "rtfm_agent.prompts",
+    "rtfm_agent.retrieval",
+    "rtfm_agent.routing",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

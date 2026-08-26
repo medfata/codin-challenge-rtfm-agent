@@ -1,5 +1,38 @@
 # RTFM For Me Agent - Architecture
 
+## Package structure
+
+The codebase is organised by domain (ingestion vs retrieval data flow, HTTP layer, routing intelligence, crawl domain, shared utilities):
+
+```
+rtfm_agent/
+├── config.py            # pydantic-settings; sections on one `settings` object
+├── llm.py               # tri-lane OpenAI-compatible chat client + fallback
+├── embedder.py          # int8 ONNX bge-small embeddings (+ get_embedder/embed_question)
+├── mcp_server.py        # MCP tool server mounted at /mcp
+├── api/                 # HTTP layer: app.py (lifespan/CORS/mount), schemas.py,
+│                        #   routes_ask | ingest | cache | sessions | crawl | events | metrics,
+│                        #   state.py (shared Redis clients)
+├── ingestion/           # documents.py, chunker.py, pipeline.py, versioning.py
+├── retrieval/           # search.py, cache.py, scope.py, citations.py,
+│                        #   rewrite.py, rag.py (answer_question pipeline)
+├── routing/             # intent.py (classify), actions.py, memory.py, warm.py
+├── crawler/             # fetch.py (URLs/SSRF/robots/extract), job.py (lifecycle),
+│                        #   review.py (staging gate)
+├── common/              # tenancy.py, sessions.py, events.py, metrics.py,
+│                        #   redis_utils.py (normalize/escape_tag), paths.py (docs dir)
+└── prompts/             # versioned .txt templates + builder functions
+
+static/                  # crawl_review.html, events_demo.html (served same-origin)
+scripts/
+├── verify/              # step*_check*.py verification drills
+└── seed/                # step1_load_docs / chunk / embed_store, embedder demo
+evals/                   # datasets/*.jsonl + heuristic RAG quality metrics + runner
+tests/                   # unit / integration / api / eval (mirror src layout)
+```
+
+Configuration access is `settings.<section>.<field>` (e.g. `settings.llm.fast_model`, `settings.crawl.max_pages`); every environment variable name is unchanged. The RAG pipeline lives in `rtfm_agent.retrieval.rag.answer_question` and is shared by REST, SSE and MCP transports.
+
 ## Stack decisions (Step 0)
 
 - **Language:** Python 3.13
@@ -9,7 +42,7 @@
 - **Redis client:** `redis-py` (async, env-driven `REDIS_URL`)
 - **Sample docs:** Pro Git book, 91 AsciiDoc sections in `docs/progit2/`
 - **Config:** `.env` (gitignored) + `.env.example`; keys: `GOOGLE_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `REDIS_URL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `TENANTS`
-- **Verification:** `scripts/step0_check.py` - 5/5 checks (PING, FT._LIST, vector KNN, LLM chat, embeddings); `scripts/step7_check_routing.py` - routing, actions, fail-open drills
+- **Verification:** `scripts/verify/step0_check.py` - 5/5 checks (PING, FT._LIST, vector KNN, LLM chat, embeddings); `scripts/verify/step7_check_routing.py` - routing, actions, fail-open drills
 
 ## What was done in Step 0
 
@@ -39,7 +72,7 @@ Safety model:
 - `reingest` runs as a background thread and acknowledges immediately.
 
 Config: `ENABLE_ROUTING`, `ENABLE_ACTIONS`, `ENABLE_DESTRUCTIVE_ACTIONS`.
-Verification: `scripts/step7_check_routing.py`.
+Verification: `scripts/verify/step7_check_routing.py`.
 
 Known tradeoffs:
 - Routing happens before the semantic-cache decision, so even cache hits pay one small LLM call (~300-800 ms).
@@ -51,7 +84,7 @@ Known tradeoffs:
 Every request except `/health` must carry an `X-Tenant-Id` slug (`^[a-z0-9][a-z0-9-_]{0,62}$`, lowercased): missing/malformed -> `422`, valid slug outside the allowlist -> `403`. The validated id scopes all storage - Redis keys and FT indexes are prefixed `t:{org}:` (docs, cache, sessions, metrics) and Agent Memory Server records are isolated via `namespace={org}` (a rejected namespace filter yields empty results, never an unfiltered search). Ingestion prefers `docs/<tenant>/` when present; existing single-tenant data can be moved into a tenant with `scripts/migrate_to_tenant.py`.
 
 Config: `TENANTS` (`acme,globex`, or `*` for open mode - any valid slug).
-Verification: `scripts/step8_check_multitenancy.py`.
+Verification: `scripts/verify/step8_check_multitenancy.py`.
 
 Safety/tradeoff: the header is trusted identity, not authentication - it carries the same trust level as the rest of the deployment. Strict mode breaks clients that omit the header (existing ones were updated), and the 2 extra FT indexes per tenant are fine for tens of teams but worth revisiting at hundreds.
 
@@ -60,7 +93,7 @@ Safety/tradeoff: the header is trusted identity, not authentication - it carries
 Each ingestion sha256-hashes every `.asc` file and folds the sorted `path:hash` pairs into a per-tenant corpus digest at `t:{org}:corpus`; the record's monotonic `version` increments only when the digest changes, so identical re-ingests invalidate nothing. Per-file metadata lives at `t:{org}:docmeta:{file}` and every chunk hash carries an informational `doc_version`. Staleness then has two detection points: semantic-cache entries are stamped with the corpus version that produced them, so hits generated under an older version are served **with** a warning (`stale: true` + text in `/ask`, a `warning` SSE event before tokens, counted in `stale_answers_served`) - never silently; and a TTL-cached on-disk hash scan compares live files against the ingest snapshot to power inline drift warnings, the `list_docs` action notice, and `GET /docs/status` (changed/added/removed detail). A missing corpus record means unversioned legacy data - behaviour identical to pre-Step 9, no warnings.
 
 Config: `ENABLE_DOC_VERSIONING`, `ENABLE_DRIFT_WARNING`, `DRIFT_SCAN_TTL_S`.
-Verification: `scripts/step9_check_versioning.py`.
+Verification: `scripts/verify/step9_check_versioning.py`.
 
 Out of scope / next step: real-time Pub/Sub or Streams notifications when ingestion completes - built in Step 11 on top of these records.
 
@@ -71,7 +104,7 @@ Tradeoffs: warn-don't-block keeps stale cached answers one visible warning away 
 The assistant is also an MCP server: a streamable-HTTP `MCPServer` mounted at `/mcp` inside the same FastAPI app (stateless + JSON mode), so external agents (Claude Code/Desktop remote connectors, Cursor, any MCP HTTP client) call it as a tool set. Five tools, all resolving their tenant from the request's `X-Tenant-Id` header with `MCP_DEFAULT_TENANT` as fallback and reusing the pipeline internals in-process (no self-HTTP): `ask_question` (full RAG incl. routing + staleness, session-carrying), `search_documents` (raw KNN chunks), `list_documents`, `documentation_status`, `service_metrics` - plus a `docs://status` resource. Destructive actions stay REST-only. Optional shared-secret gate via `MCP_BEARER_TOKEN`; `MCP_ALLOWED_HOSTS` feeds the SDK's DNS-rebinding allowlist when deployed behind a real hostname. The mounted sub-app's lifespan never runs under `Mount`, so the host lifespan enters the MCP session manager explicitly.
 
 Config: `ENABLE_MCP`, `MCP_DEFAULT_TENANT`, `MCP_BEARER_TOKEN`, `MCP_ALLOWED_HOSTS`.
-Verification: `scripts/step10_check_mcp.py`.
+Verification: `scripts/verify/step10_check_mcp.py`.
 
 Tradeoffs: HTTP-only v1 (no stdio wrapper yet); bearer token is a shared secret rather than per-agent identity; stateless mode drops cross-reconnect resumability; long-term memory is intentionally not proxied - agents talk to the Agent Memory Server's own native MCP endpoint side-by-side.
 
@@ -84,14 +117,14 @@ Browsers subscribe via `GET /events/stream` (SSE): stream entry ids double as SS
 Streams were chosen over Pub/Sub for durability + replay in one mechanism; Pub/Sub's fire-and-forget would lose events during disconnects/restarts. Publishing pipelines XADD with its metrics counter (one roundtrip) and is fail-open - event failures never break ingest/ask/memory paths. Known limits: `memory.turn_stored` fires only after AMS accepts the write (<400), and signals a saved turn, not long-term memories (AMS extracts those asynchronously in its own worker, no hooks).
 
 Config: `ENABLE_EVENTS`, `EVENTS_STREAM_MAXLEN`, `EVENTS_HEARTBEAT_S`, `EVENTS_CORS_ORIGINS`.
-Verification: `scripts/step11_check_events.py` (incl. a 40-subscriber concurrency drill); live feed demo at `scripts/events_demo.html` or `/demo/events`.
+Verification: `scripts/verify/step11_check_events.py` (incl. a 40-subscriber concurrency drill); live feed demo at `static/events_demo.html` or `/demo/events`.
 
 ## Step 12 - Multi-model strategy
 
 Redis doesn't care which model generated the content it stores, so LLM spend is split by task visibility: background/stored work rides a cheap **economy lane** (`gemini-3.5-flash-lite`, failing over to Groq `qwen/qwen3.6-27b` - a separate free pool, with `reasoning_effort: none`, so warm bursts never starve the gpt-oss-20b routing lane), while only the user-facing doc answer uses `gpt-oss-120b`. Chitchat replies and memory-route synthesis moved to economy; routing/rewrite/summary stay fast. The semantic cache gains **warming**: a per-tenant question-popularity ZSET (`{prefix}qfreq`, top-200, 30-day TTL) feeds a locked background job (`POST /cache/warm` or the conversational `warm_cache` action) that pre-answers popular questions with the economy lane straight into the cache, stamped with the current corpus version; live misses still generate with the capable model. AMS memory extraction switched to flash-lite (embeddings untouched). MCP inherits everything via `_pipeline`.
 
 Config: `LLM_ECONOMY_MODEL`, `LLM_ECONOMY_FALLBACK_MODEL`, `ENABLE_CACHE_WARM`, `CACHE_WARM_TOP_N`, `QFREQ_TTL_S`, `QFREQ_MAX_ENTRIES`.
-Verification: `scripts/step12_check_multi_model.py`.
+Verification: `scripts/verify/step12_check_multi_model.py`.
 
 Tradeoffs: warm answers are standalone (no session/persona context); chitchat/synthesis ride a small model in exchange for provider-outage resilience; AMS has no native fallback so Google-quota exhaustion pauses memory promotion until reset (escape hatch documented in docker-compose).
 
@@ -102,7 +135,7 @@ Tradeoffs: warm answers are standalone (no session/persona context); chitchat/sy
 Pages are **staged** under `docs/web/_staging/<org>/<job>/` - nothing touches the corpus until a human verifies them. The review UI at `/crawl/review` is a single self-contained static page (vanilla JS, served same-origin by FastAPI): it starts crawls, lists staged jobs, previews each page's extracted text, and approves/discards; live updates ride the Step 11 event stream (`crawl.staged` / `crawl.failed` alongside reused `ingest.*`). Approval (`POST /crawl/jobs/{id}/approve`, optional `exclude` list) copies kept pages to `docs/web/<org>/<host>/<slug>-<pid>.md` (leading `== Title` line so the standard loader picks up headings), deletes previously-approved files for vanished/excluded pages on covered hosts, then triggers a normal `run_ingestion()` - one merged corpus, so versioning, stale-cache warnings, drift scanning, hybrid search and citations all apply unchanged (web chunks are namespaced `web/<host>/<page>.md`). `auto_ingest=true` skips the review gate for trusted sources. Job lifecycle lives in `t:{org}:crawl:{job_id}` + a ZSET index; unreviewed staging sweeps after `CRAWL_STAGE_TTL_H`.
 
 Config: `ENABLE_WEB_CRAWL`, `WEB_DOCS_DIR`, `CRAWL_MAX_PAGES`, `CRAWL_MAX_DEPTH`, `CRAWL_HARD_PAGE_CAP`, `CRAWL_DELAY_MS`, `CRAWL_TIMEOUT_S`, `CRAWL_MAX_BYTES`, `CRAWL_MIN_TEXT_CHARS`, `CRAWL_ALLOW_PRIVATE_HOSTS`, `CRAWL_STAGE_TTL_H`.
-Verification: `scripts/step13_check_crawl.py`.
+Verification: `scripts/verify/step13_check_crawl.py`.
 
 Tradeoffs: in-process background thread (no durable queue), one crawl per tenant at a time; approval runs a full-corpus re-ingest synchronously (same semantics as `POST /ingest`); extracted text approximates the source formatting; cross-host documentation sites need a future allowlist parameter.
 
@@ -113,7 +146,7 @@ Tradeoffs: in-process background thread (no durable queue), one crawl per tenant
 Pages are **staged** under `docs/web/_staging/<org>/<job>/` - nothing touches the corpus until a human verifies them. The review UI at `/crawl/review` is a single self-contained static page (vanilla JS, served same-origin by FastAPI): it starts crawls, lists staged jobs, previews each page's extracted text, and approves/discards; live updates ride the Step 11 event stream (`crawl.staged` / `crawl.failed` alongside reused `ingest.*`). Approval (`POST /crawl/jobs/{id}/approve`, optional `exclude` list) copies kept pages to `docs/web/<org>/<host>/<slug>-<pid>.md` (leading `== Title` line so the standard loader picks up headings), deletes previously-approved files for vanished/excluded pages on covered hosts, then triggers a normal `run_ingestion()` - one merged corpus, so versioning, stale-cache warnings, drift scanning, hybrid search and citations all apply unchanged (web chunks are namespaced `web/<host>/<page>.md`). `auto_ingest=true` skips the review gate for trusted sources. Job lifecycle lives in `t:{org}:crawl:{job_id}` + a ZSET index; unreviewed staging sweeps after `CRAWL_STAGE_TTL_H`.
 
 Config: `ENABLE_WEB_CRAWL`, `WEB_DOCS_DIR`, `CRAWL_MAX_PAGES`, `CRAWL_MAX_DEPTH`, `CRAWL_HARD_PAGE_CAP`, `CRAWL_DELAY_MS`, `CRAWL_TIMEOUT_S`, `CRAWL_MAX_BYTES`, `CRAWL_MIN_TEXT_CHARS`, `CRAWL_ALLOW_PRIVATE_HOSTS`, `CRAWL_STAGE_TTL_H`.
-Verification: `scripts/step13_check_crawl.py`.
+Verification: `scripts/verify/step13_check_crawl.py`.
 
 Tradeoffs: in-process background thread (no durable queue), one crawl per tenant at a time; approval runs a full-corpus re-ingest synchronously (same semantics as `POST /ingest`); extracted text approximates the source formatting; cross-host documentation sites need a future allowlist parameter.
 

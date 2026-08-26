@@ -1,0 +1,8 @@
+{"id": "q01", "question": "What is Git?", "expected_keywords": ["distributed version control"], "must_cite": true, "expect_refusal": false},
+{"id": "q02", "question": "How do I undo the last commit but keep my changes?", "expected_keywords": ["reset", "soft"], "must_cite": true, "expect_refusal": false},
+{"id": "q03", "question": "What does git stash do?", "expected_keywords": ["stash", "working directory"], "must_cite": true, "expect_refusal": false},
+{"id": "q04", "question": "Explain the difference between merge and rebase.", "expected_keywords": ["rebase", "merge"], "must_cite": true, "expect_refusal": false},
+{"id": "q05", "question": "Based on the getting started guide, how do I set up my identity?", "expected_keywords": ["config", "user.name"], "must_cite": true, "expect_refusal": false},
+{"id": "q06", "question": "How do I list all branches in a repository?", "expected_keywords": ["branch"], "must_cite": true, "expect_refusal": false},
+{"id": "q07", "question": "What is your return policy for washing machines?", "expected_keywords": [], "must_cite": false, "expect_refusal": true},
+{"id": "q08", "question": "Who won the 1998 FIFA World Cup final?", "expected_keywords": [], "must_cite": false, "expect_refusal": true}

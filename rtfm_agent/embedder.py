@@ -6,12 +6,13 @@ inference: CLS pooling + L2 normalization. ~7x faster than fp32 on CPU.
 """
 
 import os
-from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer
+
+from rtfm_agent.config import settings
 
 REPO_ID = "Xenova/bge-small-en-v1.5"
 MAX_SEQ_LEN = 512
@@ -68,6 +69,23 @@ class FastInt8Embedder:
             out[batch_indices] = cls_vecs
 
         return out
+
+
+_embedder: FastInt8Embedder | None = None
+
+
+def get_embedder() -> FastInt8Embedder:
+    """Process-wide singleton; first call loads the ONNX model."""
+    global _embedder
+    if _embedder is None:
+        _embedder = FastInt8Embedder(threads=settings.embed.ort_threads)
+    return _embedder
+
+
+def embed_question(text: str) -> bytes:
+    """float32 embedding blob for one text - the wire format for KNN PARAMS."""
+    vec = get_embedder().embed([text])[0].astype(np.float32)
+    return vec.tobytes()
 
 
 if __name__ == "__main__":

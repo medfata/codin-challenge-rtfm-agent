@@ -20,21 +20,7 @@ from typing import Iterator
 
 import httpx
 
-from rtfm_agent.config import (
-    ENABLE_LLM_FALLBACK,
-    FALLBACK_LLM_API_KEY,
-    FALLBACK_LLM_BASE_URL,
-    FALLBACK_LLM_MODEL,
-    GOOGLE_API_KEY,  # re-exported for health reporting
-    LLM_API_KEY,
-    LLM_BASE_URL,
-    LLM_ECONOMY_API_KEY,
-    LLM_ECONOMY_BASE_URL,
-    LLM_ECONOMY_FALLBACK_MODEL,
-    LLM_ECONOMY_MODEL,
-    LLM_FAST_MODEL,  # re-exported for fast-lane callers
-    LLM_MODEL,
-)
+from rtfm_agent.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +37,17 @@ def _lanes(lane: str = "generation") -> list[dict]:
     """Ordered provider lanes for the named lane; skip unconfigured ones.
 
     generation/fast share the classic chain - callers pass their model
-    override (LLM_MODEL / LLM_FAST_MODEL) per call. Economy has its own
-    chain with pinned models and never touches the fast lane's quota pool.
+    override (settings.llm.model / settings.llm.fast_model) per call.
+    Economy has its own chain with pinned models and never touches the fast
+    lane's quota pool.
     """
     if lane == "economy":
         lanes = [
             {
                 "name": "economy",
-                "base_url": LLM_ECONOMY_BASE_URL,
-                "api_key": LLM_ECONOMY_API_KEY,
-                "model": LLM_ECONOMY_MODEL,
+                "base_url": settings.llm.economy_base_url,
+                "api_key": settings.llm.economy_api_key,
+                "model": settings.llm.economy_model,
             },
             {
                 # Deep free pool, distinct from gpt-oss-20b: cache warming
@@ -68,25 +55,26 @@ def _lanes(lane: str = "generation") -> list[dict]:
                 # qwen3 models emit <think> reasoning by default; the extra
                 # payload switches it off (verified against Groq, Aug 2026).
                 "name": "economy-fallback",
-                "base_url": LLM_BASE_URL,
-                "api_key": LLM_API_KEY,
-                "model": LLM_ECONOMY_FALLBACK_MODEL,
+                "base_url": settings.llm.base_url,
+                "api_key": settings.llm.api_key,
+                "model": settings.llm.economy_fallback_model,
                 "payload_extra": {"reasoning_effort": "none"},
             },
         ]
         return [entry for entry in lanes if entry["api_key"]]
 
-    lanes = [{"name": "primary", "base_url": LLM_BASE_URL, "api_key": LLM_API_KEY}]
+    lanes = [{"name": "primary", "base_url": settings.llm.base_url,
+              "api_key": settings.llm.api_key}]
     if (
-        ENABLE_LLM_FALLBACK
-        and FALLBACK_LLM_API_KEY
-        and FALLBACK_LLM_BASE_URL != LLM_BASE_URL
+        settings.llm.enable_fallback
+        and settings.llm.fallback_api_key
+        and settings.llm.fallback_base_url != settings.llm.base_url
     ):
         lanes.append({
             "name": "fallback",
-            "base_url": FALLBACK_LLM_BASE_URL,
-            "api_key": FALLBACK_LLM_API_KEY,
-            "model": FALLBACK_LLM_MODEL,
+            "base_url": settings.llm.fallback_base_url,
+            "api_key": settings.llm.fallback_api_key,
+            "model": settings.llm.fallback_model,
         })
     return [entry for entry in lanes if entry["api_key"]]
 
@@ -96,7 +84,7 @@ def _headers(api_key: str) -> dict:
 
 
 def _resolve_model(lane: dict, model: str | None) -> str:
-    return lane.get("model") or model or LLM_MODEL
+    return lane.get("model") or model or settings.llm.model
 
 
 def _is_failover(exc: LLMError) -> bool:

@@ -1,15 +1,15 @@
-"""Step 10: MCP exposure - the assistant as a tool server for other agents.
+"""MCP exposure - the assistant as a tool server for other agents.
 
 Mounts a streamable-HTTP MCP server at `/mcp` inside the existing FastAPI
-app (see api.lifespan for the session-manager wiring). Tools call the same
-internals the REST API uses - the RAG pipeline, actions, versioning and
+app (see api.app lifespan for the session-manager wiring). Tools call the
+same internals the REST API uses - the RAG pipeline, actions, versioning and
 metrics modules - directly in-process; there is no self-HTTP hop.
 
 Identity reuses the deployment's trusted-header model: tools resolve their
 tenant from the X-Tenant-Id header carried on the /mcp request (supported by
 Claude Code / Cursor / Claude Desktop remote connector configs), falling
-back to MCP_DEFAULT_TENANT when absent. An optional shared bearer secret can
-gate the whole endpoint via MCP_BEARER_TOKEN.
+back to settings.mcp.default_tenant when absent. An optional shared bearer
+secret can gate the whole endpoint via settings.mcp.bearer_token.
 
 Destructive operations are deliberately not exposed: flushing caches or
 re-ingesting remains a REST/operator decision.
@@ -30,18 +30,15 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 
-from rtfm_agent.config import (
-    MCP_ALLOWED_HOSTS,
-    MCP_BEARER_TOKEN,
-    MCP_DEFAULT_TENANT,
-)
-from rtfm_agent.tenancy import TenantContext, normalize_tenant
+from rtfm_agent.common.paths import docs_dir_for
+from rtfm_agent.common.tenancy import TenantContext, normalize_tenant
+from rtfm_agent.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class McpMount(NamedTuple):
-    """Everything api.py needs to host the MCP server."""
+    """Everything api.app needs to host the MCP server."""
 
     server: MCPServer          # registry handle (introspection/tests)
     app: object                # ASGI app to mount at /mcp (maybe wrapped)
@@ -69,7 +66,7 @@ class BearerTokenMiddleware:
 
 
 def resolve_tenant(headers) -> TenantContext:
-    """Tenant for one MCP call: X-Tenant-Id header, else MCP_DEFAULT_TENANT.
+    """Tenant for one MCP call: X-Tenant-Id header, else MCP default tenant.
 
     Raises ToolError so agents get an actionable message instead of a silent
     default tenant. Accepts any mapping (Starlette Headers are provided by
@@ -86,8 +83,8 @@ def resolve_tenant(headers) -> TenantContext:
             raw = value
             break
     ctx = normalize_tenant(raw)
-    if ctx is None and MCP_DEFAULT_TENANT:
-        ctx = normalize_tenant(MCP_DEFAULT_TENANT)
+    if ctx is None and settings.mcp.default_tenant:
+        ctx = normalize_tenant(settings.mcp.default_tenant)
     if ctx is None:
         raise ToolError(
             "missing or invalid X-Tenant-Id header "
@@ -97,26 +94,15 @@ def resolve_tenant(headers) -> TenantContext:
     return ctx
 
 
-def _docs_dir_for(t: TenantContext) -> str:
-    """Mirror api._resolve_docs_dir precedence minus the per-request override."""
-    from pathlib import Path
-
-    from rtfm_agent.config import DOCS_DIR
-
-    project_root = Path(__file__).resolve().parent.parent
-    team_dir = project_root / "docs" / t.id
-    if team_dir.is_dir():
-        return str(team_dir)
-    return str(Path(DOCS_DIR))
-
-
 def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
     """Build the MCP server + mountable ASGI app.
 
     `get_redis` injects the API's Redis connection (avoids an import cycle
-    with api.py); the RAG pipeline still runs through api._pipeline, which
-    uses that same connection.
+    with the api package); the RAG pipeline still runs through
+    retrieval.rag.answer_question, which receives that same connection.
     """
+    from rtfm_agent.retrieval.rag import answer_question
+
     mcp = MCPServer(
         name="rtfm",
         title="RTFM For Me Agent",
@@ -128,9 +114,9 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
     )
 
     def _count(t: TenantContext) -> None:
-        from rtfm_agent import metrics as metrics_mod
+        from rtfm_agent.common.metrics import record_mcp_call
 
-        metrics_mod.record_mcp_call(get_redis(), t)
+        record_mcp_call(get_redis(), t)
 
     @mcp.tool(
         title="Ask the documentation assistant",
@@ -146,14 +132,13 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
                            ctx: Context = None) -> dict:
         t = resolve_tenant(ctx.headers if ctx else None)
         _count(t)
-        from rtfm_agent.api import _pipeline
 
         # The pipeline assumes the caller generated the id (REST does); a
         # blank id would funnel every stateless agent call into one session.
         sid = (session_id or "").strip() or uuid.uuid4().hex
         try:
             result = await to_thread.run_sync(
-                functools.partial(_pipeline, question, sid, t)
+                functools.partial(answer_question, get_redis(), question, sid, t)
             )
         except HTTPException as exc:
             raise ToolError(str(exc.detail))
@@ -162,7 +147,7 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
         return {
             "session_id": sid,
             "answer": result["answer"],
-            "citations": [c.model_dump() for c in result.get("citations", [])],
+            "citations": result.get("citations", []),
             "sources_consulted": result.get("sources_consulted", 0),
             "cached": result.get("cached", False),
             "stale": result.get("stale", False),
@@ -187,7 +172,8 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
         def _search():
             import numpy as np
 
-            from rtfm_agent.retrieval import get_embedder, retrieve
+            from rtfm_agent.embedder import get_embedder
+            from rtfm_agent.retrieval.search import retrieve
 
             r = get_redis()
             qvec = get_embedder().embed([query])[0].astype(np.float32).tobytes()
@@ -210,7 +196,7 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
     async def list_documents(ctx: Context = None) -> str:
         t = resolve_tenant(ctx.headers if ctx else None)
         _count(t)
-        from rtfm_agent.actions import _list_documents
+        from rtfm_agent.routing.actions import _list_documents
 
         try:
             return await to_thread.run_sync(
@@ -220,9 +206,9 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
             raise ToolError(f"list_documents failed: {exc}")
 
     def _status(t: TenantContext) -> dict:
-        from rtfm_agent import versions as versions_mod
+        from rtfm_agent.ingestion import versioning
 
-        return versions_mod.status_report(get_redis(), t, _docs_dir_for(t))
+        return versioning.status_report(get_redis(), t, docs_dir_for(t))
 
     @mcp.tool(
         title="Documentation status",
@@ -254,12 +240,12 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
         _count(t)
 
         def _metrics():
-            from rtfm_agent import cache as cache_mod
-            from rtfm_agent import metrics as metrics_mod
+            from rtfm_agent.common.metrics import snapshot
+            from rtfm_agent.retrieval.cache import count_entries
 
             r = get_redis()
-            snap = metrics_mod.snapshot(r, t)
-            snap["cache_size"] = cache_mod.count_entries(r, t)
+            snap = snapshot(r, t)
+            snap["cache_size"] = count_entries(r, t)
             snap["tenant"] = t.id
             return snap
 
@@ -294,10 +280,11 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
     )(read_docs_status)
 
     security = (
-        TransportSecuritySettings(allowed_hosts=MCP_ALLOWED_HOSTS, allowed_origins=[])
-        if MCP_ALLOWED_HOSTS else None
+        TransportSecuritySettings(allowed_hosts=settings.mcp.allowed_hosts,
+                                  allowed_origins=[])
+        if settings.mcp.allowed_hosts else None
     )
-    # Default inner path keeps the endpoint at /mcp: api.py mounts this app
+    # Default inner path keeps the endpoint at /mcp: api.app mounts this app
     # at root AFTER its REST routes, so Starlette order gives REST priority
     # and /mcp falls through here (no Mount-prefix redirects).
     starlette_app = mcp.streamable_http_app(
@@ -306,7 +293,7 @@ def create_mcp_server(get_redis: Callable[[], Redis]) -> McpMount:
         transport_security=security,
     )
     asgi_app = (
-        BearerTokenMiddleware(starlette_app, MCP_BEARER_TOKEN)
-        if MCP_BEARER_TOKEN else starlette_app
+        BearerTokenMiddleware(starlette_app, settings.mcp.bearer_token)
+        if settings.mcp.bearer_token else starlette_app
     )
     return McpMount(server=mcp, app=asgi_app, lifespan_app=starlette_app)

@@ -28,10 +28,10 @@ sys.path.insert(0, str(project_root))
 
 from redis import Redis
 
-from rtfm_agent import cache as cache_mod
-from rtfm_agent import ingest as ingest_mod
-from rtfm_agent.config import EMBEDDING_DIM, REDIS_URL
-from rtfm_agent.tenancy import normalize_tenant
+from rtfm_agent.retrieval import cache as cache_mod
+from rtfm_agent.ingestion import pipeline as ingest_mod
+from rtfm_agent.config import settings
+from rtfm_agent.common.tenancy import normalize_tenant
 
 LEGACY_PATTERNS = ("doc:*", "cache:*", "session:*", "metrics:*")
 
@@ -51,17 +51,17 @@ def main():
         print(f"Error: invalid or disallowed target tenant '{args.target}'")
         sys.exit(1)
 
-    r = Redis.from_url(REDIS_URL, decode_responses=False)
+    r = Redis.from_url(settings.redis.url, decode_responses=False)
     try:
         r.ping()
     except Exception as exc:
-        print(f"Error: Redis unreachable at {REDIS_URL}: {str(exc)[:200]}")
+        print(f"Error: Redis unreachable at {settings.redis.url}: {str(exc)[:200]}")
         sys.exit(1)
 
     print("=" * 60)
     print(f"Migrating legacy keys -> tenant '{ctx.id}' "
           f"(prefix '{ctx.prefix}')" + ("  [DRY RUN]" if args.dry_run else ""))
-    print(f"Redis: {REDIS_URL}")
+    print(f"Redis: {settings.redis.url}")
     print("=" * 60)
 
     moved = {pattern: 0 for pattern in LEGACY_PATTERNS}
@@ -95,7 +95,7 @@ def main():
     if args.dry_run:
         print("\nDry run complete - no keys renamed, no indexes touched.")
     else:
-        doc_index_created = ingest_mod.create_redis_index(r, ctx, EMBEDDING_DIM)
+        doc_index_created = ingest_mod.create_redis_index(r, ctx, settings.embed.dim)
         cache_index_created = cache_mod.ensure_cache_index(r, ctx)
 
     print("\nSummary")
